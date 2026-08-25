@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia: Divergencias RSI en Velas de 1 Minuto
+Estrategia: Confluencia Divergencias RSI + Oscilador Oracle en Velas de 1 Minuto
 Modo: Aislado (Isolated) | Apalancamiento: 10x | Margen: 5 USDT
-Take Profit: +10% ROI (sobre lo invertido)
-Stop Loss: -50% ROI (sobre lo invertido)
+Take Profit: +3% ROI (sobre lo invertido)
+Stop Loss: -10% ROI (sobre lo invertido)
 """
 
 import os
@@ -60,8 +60,8 @@ class BinanceRsiDivergenceBot:
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "10.0"))
-        self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "50.0"))
+        self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "3.0"))
+        self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "3.0"))
         self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
         self.pivot_left = int(os.getenv("PIVOT_LOOKBACK_LEFT", "5"))
         self.pivot_right = int(os.getenv("PIVOT_LOOKBACK_RIGHT", "2"))
@@ -91,7 +91,7 @@ class BinanceRsiDivergenceBot:
     def _initialize_client(self):
         """Inicializa el cliente Binance API y obtiene precisión del símbolo."""
         print(Fore.CYAN + "=" * 65)
-        print(Fore.CYAN + "      BOT DE TRADING FUTUROS BINANCE - DIVERGENCIA RSI (1m)      ")
+        print(Fore.CYAN + "   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE (1m)        ")
         print(Fore.CYAN + "=" * 65)
         print(f"{Fore.YELLOW}Símbolo: {Style.BRIGHT}{self.symbol}")
         print(f"{Fore.YELLOW}Modo de Margen: {Style.BRIGHT}AISLADO (ISOLATED)")
@@ -124,6 +124,9 @@ class BinanceRsiDivergenceBot:
                 print(Fore.GREEN + "[OK] Conexión autenticada exitosamente con Binance Futures API.")
             else:
                 print(Fore.GREEN + "[OK] Conexión de mercado iniciada correctamente.")
+
+            # Cerrar cualquier posición abierta previa al iniciar
+            self.close_existing_positions()
 
         except Exception as e:
             print(Fore.RED + f"[!] Error conectando a Binance API: {e}")
@@ -232,6 +235,78 @@ class BinanceRsiDivergenceBot:
         except Exception as e:
             print(Fore.RED + f"[!] Error al configurar cuenta de futuros: {e}")
 
+    def close_existing_positions(self):
+        """
+        Cierra cualquier posición abierta previa al iniciar el bot y cancela órdenes pendientes.
+        """
+        print(Fore.YELLOW + "🔍 Verificando y cerrando posiciones abiertas al iniciar el bot...")
+        if self.dry_run:
+            self.current_position = None
+            self.entry_price = 0.0
+            self.position_qty = 0.0
+            print(Fore.GREEN + "[OK] Modo Simulación (DRY-RUN): Posición inicial restablecida a SIN POSICIÓN.")
+            return
+
+        if not self.client or not self.api_key or not self.api_secret:
+            print(Fore.YELLOW + "[!] Sin API Keys configuradas. Omitiendo cierre de posiciones previas.")
+            return
+
+        try:
+            # 1. Cancelar órdenes previas (Normales y Algo)
+            try:
+                self.client.futures_cancel_all_open_orders(symbol=self.symbol)
+            except Exception as e:
+                logging.warning(f"Nota cancelando órdenes previas: {e}")
+            try:
+                self.futures_cancel_all_algo_orders(symbol=self.symbol)
+            except Exception as e:
+                logging.warning(f"Nota cancelando órdenes algo previas: {e}")
+
+            # 2. Consultar posición activa
+            positions = self.client.futures_position_information(symbol=self.symbol)
+            closed_any = False
+            for pos in positions:
+                amt = float(pos['positionAmt'])
+                if amt != 0:
+                    side_to_close = 'SELL' if amt > 0 else 'BUY'
+                    qty = self._format_quantity(abs(amt))
+                    pos_type = 'LONG' if amt > 0 else 'SHORT'
+                    print(Fore.RED + f"[⚠️ INICIO] Posición previa detectada en Binance: {pos_type} de {qty} {self.symbol}. Cerrando a MARKET...")
+                    
+                    close_order = self.client.futures_create_order(
+                        symbol=self.symbol,
+                        side=side_to_close,
+                        type='MARKET',
+                        quantity=qty,
+                        reduceOnly=True
+                    )
+                    print(Fore.GREEN + f"[OK] Posición {pos_type} previa cerrada exitosamente a MARKET. Order ID: {close_order.get('orderId')}")
+                    closed_any = True
+
+            if not closed_any:
+                print(Fore.GREEN + f"[OK] Sin posiciones abiertas previas para {self.symbol} en Binance Futuros.")
+
+            self.current_position = None
+            self.entry_price = 0.0
+            self.position_qty = 0.0
+
+        except Exception as e:
+            print(Fore.RED + f"[!] Error cerrando posiciones abiertas al iniciar: {e}")
+
+    def futures_create_algo_order(self, **params):
+        """
+        Envía una orden algorítmica/condicional (STOP_MARKET, TAKE_PROFIT_MARKET, etc.)
+        utilizando el endpoint POST /fapi/v1/algoOrder de Binance Futures.
+        """
+        return self.client._request_futures_api("post", "algoOrder", signed=True, data=params)
+
+    def futures_cancel_all_algo_orders(self, symbol):
+        """
+        Cancela todas las órdenes algorítmicas/condicionales abiertas para un símbolo
+        utilizando el endpoint DELETE /fapi/v1/algoOpenOrders de Binance Futures.
+        """
+        return self.client._request_futures_api("delete", "algoOpenOrders", signed=True, data={"symbol": symbol})
+
     def fetch_klines(self, limit=200):
         """Obtiene las últimas velas de 1 minuto desde Binance."""
         try:
@@ -319,12 +394,54 @@ class BinanceRsiDivergenceBot:
 
         return signal, df
 
+    def calculate_oracle_oscillator(self, df):
+        """
+        Calcula el Oscilador Oracle (Ponderado: Stoch K + RSI + Williams %R) y su línea de señal EMA.
+        Retorna: 'ORACLE_BULL', 'ORACLE_BEAR', o 'ORACLE_NEUTRAL'.
+        """
+        df = df.copy()
+        period = 14
+        if len(df) < period + 10:
+            return 'ORACLE_NEUTRAL', 50.0, 50.0
+
+        # 1. Stochastic %K (14)
+        low_min = df['low'].rolling(window=period).min()
+        high_max = df['high'].rolling(window=period).max()
+        denom = (high_max - low_min).replace(0, np.nan)
+        stoch_k = ((df['close'] - low_min) / denom) * 100.0
+        stoch_k = stoch_k.fillna(50.0)
+
+        # 2. RSI (14)
+        rsi = self.calculate_rsi(df).fillna(50.0)
+
+        # 3. Williams %R Normalizado [0, 100]
+        williams_r = ((high_max - df['close']) / denom) * 100.0
+        williams_norm = 100.0 - williams_r.fillna(50.0)
+
+        # 4. Línea Principal del Oscilador Oracle
+        oracle_line = (stoch_k * 0.35) + (rsi * 0.35) + (williams_norm * 0.30)
+
+        # 5. Línea de Señal (EMA de 9 periodos de la Línea Oracle)
+        signal_line = oracle_line.ewm(span=9, adjust=False).mean()
+
+        last_oracle = oracle_line.iloc[-1]
+        last_signal = signal_line.iloc[-1]
+
+        if last_oracle > last_signal:
+            oracle_status = 'ORACLE_BULL'
+        elif last_oracle < last_signal:
+            oracle_status = 'ORACLE_BEAR'
+        else:
+            oracle_status = 'ORACLE_NEUTRAL'
+
+        return oracle_status, last_oracle, last_signal
+
     def calculate_tp_sl(self, side, entry_price):
         """
-        Calcula precios exactos de Take Profit (+10% ROI) y Stop Loss (-50% ROI).
+        Calcula precios exactos de Take Profit (+3% ROI) y Stop Loss (-10% ROI).
         Apalancamiento 10x:
-        +10% ROI = +1.0% de variación de precio
-        -50% ROI = -5.0% de variación de precio
+        +3% ROI = +0.3% de variación de precio
+        -10% ROI = -1.0% de variación de precio
         """
         price_tp_pct = (self.tp_roi_pct / 100.0) / self.leverage
         price_sl_pct = (self.sl_roi_pct / 100.0) / self.leverage
@@ -382,6 +499,16 @@ class BinanceRsiDivergenceBot:
 
         # Ejecución Real en Binance Futures
         try:
+            # 0. Cancelar órdenes previas antes de enviar una nueva orden
+            try:
+                self.client.futures_cancel_all_open_orders(symbol=self.symbol)
+            except Exception as e:
+                logging.warning(f"Nota: No se pudieron cancelar órdenes previas: {e}")
+            try:
+                self.futures_cancel_all_algo_orders(symbol=self.symbol)
+            except Exception as e:
+                logging.warning(f"Nota: No se pudieron cancelar órdenes algo previas: {e}")
+
             # 1. Enviar Orden Market de Entrada
             order_side = 'BUY' if side == 'LONG' else 'SELL'
             market_order = self.client.futures_create_order(
@@ -399,26 +526,34 @@ class BinanceRsiDivergenceBot:
                 current_price = real_entry
                 tp_price, sl_price = self.calculate_tp_sl(side, current_price)
 
-            # 2. Orden de Take Profit (TAKE_PROFIT_MARKET)
+            # 2. Orden de Take Profit (TAKE_PROFIT_MARKET via Algo API)
             exit_side = 'SELL' if side == 'LONG' else 'BUY'
-            self.client.futures_create_order(
-                symbol=self.symbol,
-                side=exit_side,
-                type='TAKE_PROFIT_MARKET',
-                stopPrice=tp_price,
-                closePosition=True
-            )
-            print(Fore.GREEN + f"[OK] Orden TAKE_PROFIT_MARKET colocada en {tp_price}")
+            try:
+                self.futures_create_algo_order(
+                    algoType='CONDITIONAL',
+                    symbol=self.symbol,
+                    side=exit_side,
+                    type='TAKE_PROFIT_MARKET',
+                    triggerPrice=str(tp_price),
+                    closePosition='true'
+                )
+                print(Fore.GREEN + f"[OK] Orden TAKE_PROFIT_MARKET colocada en {tp_price}")
+            except Exception as e:
+                print(Fore.RED + f"[!] Error colocando Take Profit algo: {e}")
 
-            # 3. Orden de Stop Loss (STOP_MARKET)
-            self.client.futures_create_order(
-                symbol=self.symbol,
-                side=exit_side,
-                type='STOP_MARKET',
-                stopPrice=sl_price,
-                closePosition=True
-            )
-            print(Fore.GREEN + f"[OK] Orden STOP_MARKET colocada en {sl_price}")
+            # 3. Orden de Stop Loss (STOP_MARKET via Algo API)
+            try:
+                self.futures_create_algo_order(
+                    algoType='CONDITIONAL',
+                    symbol=self.symbol,
+                    side=exit_side,
+                    type='STOP_MARKET',
+                    triggerPrice=str(sl_price),
+                    closePosition='true'
+                )
+                print(Fore.GREEN + f"[OK] Orden STOP_MARKET colocada en {sl_price}")
+            except Exception as e:
+                print(Fore.RED + f"[!] Error colocando Stop Loss algo: {e}")
 
             self.current_position = side
             self.entry_price = current_price
@@ -481,17 +616,38 @@ class BinanceRsiDivergenceBot:
 
                 current_price = df['close'].iloc[-1]
                 
-                # 2. Detectar divergencias RSI
-                signal, df_rsi = self.detect_rsi_divergences(df)
+                # 2. Detectar divergencias RSI y Oscilador Oracle
+                rsi_signal, df_rsi = self.detect_rsi_divergences(df)
                 current_rsi = df_rsi['rsi'].iloc[-1] if 'rsi' in df_rsi else 0.0
+                
+                oracle_signal, oracle_val, oracle_sig_val = self.calculate_oracle_oscillator(df)
 
-                # 3. Consultar posición activa
+                # 3. Confluencia de señales para entrada
+                combined_signal = None
+                if rsi_signal == 'BULL_DIV' and oracle_signal == 'ORACLE_BULL':
+                    combined_signal = 'LONG'
+                elif rsi_signal == 'BEAR_DIV' and oracle_signal == 'ORACLE_BEAR':
+                    combined_signal = 'SHORT'
+
+                # 4. Consultar posición activa
                 active_pos, entry, qty = self.get_active_position()
                 
-                # 4. En modo simulación, comprobar salidas TP/SL
+                # 5. En modo simulación, comprobar salidas TP/SL
                 if self.dry_run and active_pos:
                     self.check_simulated_exit(current_price)
                     active_pos, entry, qty = self.get_active_position()
+                elif not self.dry_run and active_pos is None and self.current_position:
+                    # En modo real, la posición se cerró en Binance por TP o SL
+                    print(Fore.YELLOW + f"\n[ℹ] Posición {self.current_position} cerrada en Binance. Cancelando órdenes pendientes huérfanas...")
+                    try:
+                        self.client.futures_cancel_all_open_orders(symbol=self.symbol)
+                    except Exception as e:
+                        logging.warning(f"Error cancelando órdenes residuales: {e}")
+                    try:
+                        self.futures_cancel_all_algo_orders(symbol=self.symbol)
+                    except Exception as e:
+                        logging.warning(f"Error cancelando órdenes algo residuales: {e}")
+                    self.current_position = None
 
                 # Consultar saldo real actualizado
                 bal = self.get_account_balance()
@@ -503,16 +659,19 @@ class BinanceRsiDivergenceBot:
                 # Formato de consola
                 status_color = Fore.YELLOW if active_pos else Fore.BLUE
                 pos_str = f"{active_pos} @ {entry}" if active_pos else "SIN POSICIÓN"
-                sig_str = signal if signal else "Sin Divergencia"
+                sig_rsi_str = rsi_signal if rsi_signal else "Sin Div"
+                sig_orc_str = "BULL" if oracle_signal == 'ORACLE_BULL' else ("BEAR" if oracle_signal == 'ORACLE_BEAR' else "NEUT")
+                sig_comb_str = combined_signal if combined_signal else "ESPERANDO"
 
-                print(f"[{now_str}] {self.symbol}: ${current_price:<9.2f} | RSI(14): {current_rsi:<5.2f} | {bal_str} | Señal: {sig_str:<14} | Estado: {status_color}{pos_str}")
+                line_str = f"[{now_str}] {self.symbol}: ${current_price:<9.2f} | RSI: {current_rsi:<5.1f} | Oracle: {oracle_val:<5.1f} ({sig_orc_str}) | Div: {sig_rsi_str:<9} | {bal_str} | Señal: {sig_comb_str:<9} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
+                sys.stdout.write(f"\r\033[K{line_str}")
+                sys.stdout.flush()
 
-                # 5. Lógica de entrada si no hay posición activa
-                if active_pos is None:
-                    if signal == 'BULL_DIV':
-                        self.open_position('LONG', current_price)
-                    elif signal == 'BEAR_DIV':
-                        self.open_position('SHORT', current_price)
+                # 6. Lógica de entrada si no hay posición activa
+                if active_pos is None and combined_signal:
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    self.open_position(combined_signal, current_price)
 
                 # Esperar 10 segundos antes de la siguiente verificación
                 time.sleep(10)
