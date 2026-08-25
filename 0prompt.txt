@@ -1,0 +1,13 @@
+Bot de trading automatico en Binance.com
+Modo Aislado
+Apalancamienot 10x 
+Monto 5 usdt
+
+Estrategia
+1) Utilizar indicador divergencia RSI de tradingview para velas de 1min
+2) cuando el indicador indique BEAR DIV hacer entrada en short
+3) cuando el indicador indique BULL DIV hacer entrada en long
+4) colocar TP a un 10% de lo invertido
+5) colocar SL a un 50% de lo invertido
+
+Visualizar en pantalla saldo real de la cuenta
