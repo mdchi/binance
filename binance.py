@@ -585,15 +585,22 @@ class BinanceRsiDivergenceBot:
             self.money_lost += abs(pnl)
 
     def show_trade_stats(self):
-        """Muestra en una sola línea el resumen de estadísticas de operaciones y dinero ganado/perdido."""
+        """Muestra en una sola línea el resumen de estadísticas de operaciones, dinero ganado/perdido y balance billetera."""
+        if self.dry_run:
+            wallet_bal_str = f"{self.simulated_balance:.2f} USDT"
+        else:
+            bal = self.get_account_balance()
+            wallet_bal_str = f"{bal['wallet_balance']:.2f} USDT" if bal['has_keys'] else "N/A"
+
         stats_line = (
-            f"{Fore.CYAN}{Style.BRIGHT}📊 ESTADÍSTICAS: "
+            f"{Fore.CYAN}{Style.BRIGHT}📊 RESUMEN: "
             f"{Fore.GREEN}Ganadas: {self.winning_trades} {Style.RESET_ALL}| "
             f"{Fore.RED}Perdidas: {self.losing_trades} {Style.RESET_ALL}| "
             f"{Fore.GREEN}Dinero Ganado: +{self.money_won:.2f} USDT {Style.RESET_ALL}| "
-            f"{Fore.RED}Dinero Perdido: -{self.money_lost:.2f} USDT{Style.RESET_ALL}"
+            f"{Fore.RED}Dinero Perdido: -{self.money_lost:.2f} USDT {Style.RESET_ALL}| "
+            f"{Fore.YELLOW}{Style.BRIGHT}Balance Billetera: {wallet_bal_str}{Style.RESET_ALL}"
         )
-        print(stats_line + "\n")
+        print(stats_line)
 
     def _get_last_realized_pnl(self):
         """Obtiene el PnL realizado de la posición recién cerrada desde Binance API."""
@@ -644,18 +651,22 @@ class BinanceRsiDivergenceBot:
             pnl = self.margin_usdt * (self.tp_roi_pct / 100.0)
             self.simulated_balance += pnl
             self._record_trade_result(pnl)
-            print(Fore.GREEN + f"\n[🎯 TAKE PROFIT ALCANZADO] Posición {pos} cerrada a {current_price}.")
-            print(Fore.GREEN + f" -> PnL: +{pnl:.2f} USDT (+{self.tp_roi_pct}% ROI) | Balance Simulado: {self.simulated_balance:.2f} USDT\n")
-            self.show_trade_stats()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            print(Fore.GREEN + f"[🎯 TAKE PROFIT ALCANZADO] Posición {pos} cerrada a {current_price}.")
+            print(Fore.GREEN + f" -> PnL: +{pnl:.2f} USDT (+{self.tp_roi_pct}% ROI)")
             self.current_position = None
+            self.show_trade_stats()
         elif hit_sl:
             pnl = -self.margin_usdt * (self.sl_roi_pct / 100.0)
             self.simulated_balance += pnl
             self._record_trade_result(pnl)
-            print(Fore.RED + f"\n[🛑 STOP LOSS ALCANZADO] Posición {pos} cerrada a {current_price}.")
-            print(Fore.RED + f" -> PnL: {pnl:.2f} USDT (-{self.sl_roi_pct}% ROI) | Balance Simulado: {self.simulated_balance:.2f} USDT\n")
-            self.show_trade_stats()
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+            print(Fore.RED + f"[🛑 STOP LOSS ALCANZADO] Posición {pos} cerrada a {current_price}.")
+            print(Fore.RED + f" -> PnL: {pnl:.2f} USDT (-{self.sl_roi_pct}% ROI)")
             self.current_position = None
+            self.show_trade_stats()
 
     def run(self):
         """Bucle principal de ejecución del bot."""
@@ -693,7 +704,9 @@ class BinanceRsiDivergenceBot:
                     active_pos, entry, qty = self.get_active_position()
                 elif not self.dry_run and active_pos is None and self.current_position:
                     # En modo real, la posición se cerró en Binance por TP o SL
-                    print(Fore.YELLOW + f"\n[ℹ] Posición {self.current_position} cerrada en Binance. Cancelando órdenes pendientes huérfanas...")
+                    sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    print(Fore.YELLOW + f"[ℹ] Posición {self.current_position} cerrada en Binance. Cancelando órdenes pendientes huérfanas...")
                     try:
                         self.client.futures_cancel_all_open_orders(symbol=self.symbol)
                     except Exception as e:
@@ -712,24 +725,27 @@ class BinanceRsiDivergenceBot:
                             pnl = (self.entry_price - current_price) * self.position_qty
 
                     self._record_trade_result(pnl)
-                    self.show_trade_stats()
                     self.current_position = None
+                    self.show_trade_stats()
 
-                # Consultar saldo real actualizado
-                bal = self.get_account_balance()
-                bal_str = f"Saldo Real: ${bal['available_balance']:<6.2f} USDT" if bal['has_keys'] else "Saldo Real: Req. API Keys"
+                # Consultar saldo actualizado
+                if self.dry_run:
+                    bal_str = f"Balance: {self.simulated_balance:.2f} USDT"
+                else:
+                    bal = self.get_account_balance()
+                    bal_str = f"Balance: {bal['wallet_balance']:.2f} USDT" if bal['has_keys'] else "Balance: Req. API Keys"
 
                 # Timestamp para registro
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                now_str = datetime.now().strftime("%H:%M:%S")
                 
                 # Formato de consola
                 status_color = Fore.YELLOW if active_pos else Fore.BLUE
-                pos_str = f"{active_pos} @ {entry}" if active_pos else "SIN POSICIÓN"
+                pos_str = f"{active_pos} @ {entry:.2f}" if active_pos else "SIN POSICIÓN"
                 sig_rsi_str = rsi_signal if rsi_signal else "Sin Div"
                 sig_orc_str = "BULL" if oracle_signal == 'ORACLE_BULL' else ("BEAR" if oracle_signal == 'ORACLE_BEAR' else "NEUT")
                 sig_comb_str = combined_signal if combined_signal else "ESPERANDO"
 
-                line_str = f"[{now_str}] {self.symbol}: ${current_price:<9.2f} | RSI: {current_rsi:<5.1f} | Oracle: {oracle_val:<5.1f} ({sig_orc_str}) | Div: {sig_rsi_str:<9} | {bal_str} | Señal: {sig_comb_str:<9} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
+                line_str = f"[{now_str}] {self.symbol}: ${current_price:<8.2f} | RSI: {current_rsi:<4.1f} | Oracle: {oracle_val:<4.1f} ({sig_orc_str}) | Div: {sig_rsi_str:<7} | {bal_str} | Señal: {sig_comb_str:<8} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
                 sys.stdout.write(f"\r\033[K{line_str}")
                 sys.stdout.flush()
 
