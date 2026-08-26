@@ -86,6 +86,13 @@ class BinanceRsiDivergenceBot:
         self.last_signal_time = None
         self.simulated_balance = 100.0  # Para modo simulación
 
+        # Estadísticas de operaciones
+        self.winning_trades = 0
+        self.losing_trades = 0
+        self.money_won = 0.0
+        self.money_lost = 0.0
+        self.position_start_time = 0
+
         self._initialize_client()
 
     def _initialize_client(self):
@@ -494,6 +501,7 @@ class BinanceRsiDivergenceBot:
             self.position_qty = qty
             self.tp_price = tp_price
             self.sl_price = sl_price
+            self.position_start_time = int(time.time() * 1000)
             print(Fore.GREEN + f"[SIMULACIÓN] Posición {side} abierta exitosamente a {current_price}")
             return True
 
@@ -560,11 +568,54 @@ class BinanceRsiDivergenceBot:
             self.position_qty = qty
             self.tp_price = tp_price
             self.sl_price = sl_price
+            self.position_start_time = int(time.time() * 1000)
             return True
 
         except Exception as e:
             print(Fore.RED + f"[!] Error abriendo posición en Binance: {e}")
             return False
+
+    def _record_trade_result(self, pnl):
+        """Registra el resultado de una operación cerrada (ganada/perdida y PnL)."""
+        if pnl > 0:
+            self.winning_trades += 1
+            self.money_won += pnl
+        elif pnl < 0:
+            self.losing_trades += 1
+            self.money_lost += abs(pnl)
+
+    def show_trade_stats(self):
+        """Muestra en una sola línea el resumen de estadísticas de operaciones y dinero ganado/perdido."""
+        stats_line = (
+            f"{Fore.CYAN}{Style.BRIGHT}📊 ESTADÍSTICAS: "
+            f"{Fore.GREEN}Ganadas: {self.winning_trades} {Style.RESET_ALL}| "
+            f"{Fore.RED}Perdidas: {self.losing_trades} {Style.RESET_ALL}| "
+            f"{Fore.GREEN}Dinero Ganado: +{self.money_won:.2f} USDT {Style.RESET_ALL}| "
+            f"{Fore.RED}Dinero Perdido: -{self.money_lost:.2f} USDT{Style.RESET_ALL}"
+        )
+        print(stats_line + "\n")
+
+    def _get_last_realized_pnl(self):
+        """Obtiene el PnL realizado de la posición recién cerrada desde Binance API."""
+        if not self.client or not self.api_key or not self.api_secret:
+            return None
+        try:
+            trades = self.client.futures_account_trades(symbol=self.symbol, limit=10)
+            if trades:
+                total_pnl = 0.0
+                found = False
+                for trade in trades:
+                    trade_time = float(trade.get('time', 0))
+                    if self.position_start_time > 0 and trade_time >= (self.position_start_time - 5000):
+                        pnl = float(trade.get('realizedPnl', 0.0))
+                        if pnl != 0.0:
+                            total_pnl += pnl
+                            found = True
+                if found:
+                    return total_pnl
+        except Exception as e:
+            logging.warning(f"No se pudo consultar PnL de Binance API: {e}")
+        return None
 
     def check_simulated_exit(self, current_price):
         """En modo Dry-Run, comprueba si la posición tocó el TP o SL."""
@@ -592,14 +643,18 @@ class BinanceRsiDivergenceBot:
         if hit_tp:
             pnl = self.margin_usdt * (self.tp_roi_pct / 100.0)
             self.simulated_balance += pnl
+            self._record_trade_result(pnl)
             print(Fore.GREEN + f"\n[🎯 TAKE PROFIT ALCANZADO] Posición {pos} cerrada a {current_price}.")
             print(Fore.GREEN + f" -> PnL: +{pnl:.2f} USDT (+{self.tp_roi_pct}% ROI) | Balance Simulado: {self.simulated_balance:.2f} USDT\n")
+            self.show_trade_stats()
             self.current_position = None
         elif hit_sl:
             pnl = -self.margin_usdt * (self.sl_roi_pct / 100.0)
             self.simulated_balance += pnl
+            self._record_trade_result(pnl)
             print(Fore.RED + f"\n[🛑 STOP LOSS ALCANZADO] Posición {pos} cerrada a {current_price}.")
             print(Fore.RED + f" -> PnL: {pnl:.2f} USDT (-{self.sl_roi_pct}% ROI) | Balance Simulado: {self.simulated_balance:.2f} USDT\n")
+            self.show_trade_stats()
             self.current_position = None
 
     def run(self):
@@ -647,6 +702,17 @@ class BinanceRsiDivergenceBot:
                         self.futures_cancel_all_algo_orders(symbol=self.symbol)
                     except Exception as e:
                         logging.warning(f"Error cancelando órdenes algo residuales: {e}")
+                    
+                    # Obtener PnL de la operación cerrada
+                    pnl = self._get_last_realized_pnl()
+                    if pnl is None:
+                        if self.current_position == 'LONG':
+                            pnl = (current_price - self.entry_price) * self.position_qty
+                        else:
+                            pnl = (self.entry_price - current_price) * self.position_qty
+
+                    self._record_trade_result(pnl)
+                    self.show_trade_stats()
                     self.current_position = None
 
                 # Consultar saldo real actualizado
