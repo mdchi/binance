@@ -13,6 +13,8 @@ import sys
 import time
 import math
 import logging
+import re
+import shutil
 from datetime import datetime
 import pandas as pd
 import numpy as np
@@ -86,7 +88,8 @@ class BinanceRsiDivergenceBot:
         self.last_signal_time = None
         self.simulated_balance = 100.0  # Para modo simulación
 
-        # Estadísticas de operaciones
+        # Estadísticas de operaciones y tiempo de inicio
+        self.bot_start_time = time.time()
         self.winning_trades = 0
         self.losing_trades = 0
         self.money_won = 0.0
@@ -608,16 +611,47 @@ class BinanceRsiDivergenceBot:
             self.losing_trades += 1
             self.money_lost += abs(pnl)
 
+    @staticmethod
+    def _fit_to_terminal(text, max_cols):
+        """Trunca la línea respetando secuencias ANSI de color para que no supere max_cols y no haga salto de línea."""
+        plain_text = re.sub(r'\033\[[0-9;]*m', '', text)
+        if len(plain_text) < max_cols:
+            return text
+
+        result = []
+        visible_count = 0
+        i = 0
+        n = len(text)
+        max_vis = max(10, max_cols - 4)
+
+        while i < n and visible_count < max_vis:
+            if text[i] == '\033':
+                match = re.match(r'\033\[[0-9;]*m', text[i:])
+                if match:
+                    code = match.group(0)
+                    result.append(code)
+                    i += len(code)
+                    continue
+            result.append(text[i])
+            visible_count += 1
+            i += 1
+
+        result.append("..." + Style.RESET_ALL)
+        return "".join(result)
+
     def show_trade_stats(self):
-        """Muestra en una sola línea el resumen de estadísticas de operaciones, dinero ganado/perdido y balance billetera."""
+        """Muestra en una sola línea el resumen de estadísticas de operaciones, tiempo total de funcionamiento, dinero ganado/perdido y balance billetera."""
         if self.dry_run:
             wallet_bal_str = f"{self.simulated_balance:.2f} USDT"
         else:
             bal = self.get_account_balance()
             wallet_bal_str = f"{bal['wallet_balance']:.2f} USDT" if bal['has_keys'] else "N/A"
 
+        uptime_hours = (time.time() - self.bot_start_time) / 3600.0
+
         stats_line = (
             f"{Fore.CYAN}{Style.BRIGHT}📊 RESUMEN: "
+            f"{Fore.CYAN}Tiempo Total: {uptime_hours:.2f}h {Style.RESET_ALL}| "
             f"{Fore.GREEN}Ganadas: {self.winning_trades} {Style.RESET_ALL}| "
             f"{Fore.RED}Perdidas: {self.losing_trades} {Style.RESET_ALL}| "
             f"{Fore.GREEN}Dinero Ganado: +{self.money_won:.2f} USDT {Style.RESET_ALL}| "
@@ -779,8 +813,9 @@ class BinanceRsiDivergenceBot:
                     bal = self.get_account_balance()
                     bal_str = f"Balance: {bal['wallet_balance']:.2f} USDT" if bal['has_keys'] else "Balance: Req. API Keys"
 
-                # Timestamp para registro
+                # Timestamp para registro y tiempo total de funcionamiento en horas
                 now_str = datetime.now().strftime("%H:%M:%S")
+                uptime_hours = (time.time() - self.bot_start_time) / 3600.0
                 
                 # Formato de consola
                 status_color = Fore.YELLOW if active_pos else Fore.BLUE
@@ -793,7 +828,15 @@ class BinanceRsiDivergenceBot:
                 sig_orc_str = "BULL" if oracle_signal == 'ORACLE_BULL' else ("BEAR" if oracle_signal == 'ORACLE_BEAR' else "NEUT")
                 sig_comb_str = combined_signal if combined_signal else "ESPERANDO"
 
-                line_str = f"[{now_str}] {self.symbol}: ${current_price:<8.2f} | VWAP: ${current_vwap:<8.2f} | RSI: {current_rsi:<4.1f} | Oracle: {oracle_val:<4.1f} ({sig_orc_str}) | Div: {sig_rsi_str:<7} | {bal_str} | Señal: {sig_comb_str:<8} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
+                cols = shutil.get_terminal_size(fallback=(160, 24)).columns
+
+                if cols >= 150:
+                    line_str = f"[{now_str} | Run: {uptime_hours:.2f}h] {self.symbol}: ${current_price:.2f} | VWAP: ${current_vwap:.2f} | RSI: {current_rsi:.1f} | Oracle: {oracle_val:.1f} ({sig_orc_str}) | Div: {sig_rsi_str} | {bal_str} | Señal: {sig_comb_str} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
+                else:
+                    line_str = f"[{now_str}|{uptime_hours:.2f}h] {self.symbol}:${current_price:.2f} | VWAP:${current_vwap:.2f} | RSI:{current_rsi:.1f} | Orc:{oracle_val:.1f}({sig_orc_str}) | Div:{sig_rsi_str} | {bal_str} | Señal:{sig_comb_str} | Est:{status_color}{pos_str}{Style.RESET_ALL}"
+
+                line_str = self._fit_to_terminal(line_str, cols)
+
                 sys.stdout.write(f"\r\033[K{line_str}")
                 sys.stdout.flush()
 
