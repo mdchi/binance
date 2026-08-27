@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia: Confluencia Divergencias RSI + Oscilador Oracle en Velas de 1 Minuto
+Estrategia: Confluencia Divergencias RSI + Oscilador Oracle + VWAP en Velas de 1 Minuto
 Modo: Aislado (Isolated) | Apalancamiento: 10x | Margen: 5 USDT
 Take Profit: +3% ROI (sobre lo invertido)
-Stop Loss: -10% ROI (sobre lo invertido)
+Stop Loss: -3% ROI (sobre lo invertido)
 """
 
 import os
@@ -98,7 +98,7 @@ class BinanceRsiDivergenceBot:
     def _initialize_client(self):
         """Inicializa el cliente Binance API y obtiene precisión del símbolo."""
         print(Fore.CYAN + "=" * 65)
-        print(Fore.CYAN + "   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE (1m)        ")
+        print(Fore.CYAN + "   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (1m) ")
         print(Fore.CYAN + "=" * 65)
         print(f"{Fore.YELLOW}Símbolo: {Style.BRIGHT}{self.symbol}")
         print(f"{Fore.YELLOW}Modo de Margen: {Style.BRIGHT}AISLADO (ISOLATED)")
@@ -443,12 +443,28 @@ class BinanceRsiDivergenceBot:
 
         return oracle_status, last_oracle, last_signal
 
+    def calculate_vwap(self, df):
+        """
+        Calcula el VWAP (Volume Weighted Average Price) acumulado intradía.
+        Resetea el acumulado diariamente a las 00:00 UTC (estándar TradingView).
+        """
+        df = df.copy()
+        typical_price = (df['high'] + df['low'] + df['close']) / 3.0
+        tp_volume = typical_price * df['volume']
+
+        dates = df['timestamp'].dt.date
+        cum_tp_vol = tp_volume.groupby(dates).cumsum()
+        cum_vol = df['volume'].groupby(dates).cumsum()
+
+        vwap = cum_tp_vol / cum_vol.replace(0, np.nan)
+        return vwap
+
     def calculate_tp_sl(self, side, entry_price):
         """
-        Calcula precios exactos de Take Profit (+3% ROI) y Stop Loss (-10% ROI).
+        Calcula precios exactos de Take Profit (+3% ROI) y Stop Loss (-3% ROI).
         Apalancamiento 10x:
         +3% ROI = +0.3% de variación de precio
-        -10% ROI = -1.0% de variación de precio
+        -3% ROI = -0.3% de variación de precio
         """
         price_tp_pct = (self.tp_roi_pct / 100.0) / self.leverage
         price_sl_pct = (self.sl_roi_pct / 100.0) / self.leverage
@@ -682,17 +698,20 @@ class BinanceRsiDivergenceBot:
 
                 current_price = df['close'].iloc[-1]
                 
-                # 2. Detectar divergencias RSI y Oscilador Oracle
+                # 2. Detectar divergencias RSI, Oscilador Oracle y VWAP
                 rsi_signal, df_rsi = self.detect_rsi_divergences(df)
                 current_rsi = df_rsi['rsi'].iloc[-1] if 'rsi' in df_rsi else 0.0
                 
                 oracle_signal, oracle_val, oracle_sig_val = self.calculate_oracle_oscillator(df)
 
-                # 3. Confluencia de señales para entrada
+                vwap_series = self.calculate_vwap(df)
+                current_vwap = vwap_series.iloc[-1] if len(vwap_series) > 0 and not pd.isna(vwap_series.iloc[-1]) else current_price
+
+                # 3. Confluencia de señales para entrada (RSI Div + Oracle + Filtro VWAP)
                 combined_signal = None
-                if rsi_signal == 'BULL_DIV' and oracle_signal == 'ORACLE_BULL':
+                if rsi_signal == 'BULL_DIV' and oracle_signal == 'ORACLE_BULL' and current_price > current_vwap:
                     combined_signal = 'LONG'
-                elif rsi_signal == 'BEAR_DIV' and oracle_signal == 'ORACLE_BEAR':
+                elif rsi_signal == 'BEAR_DIV' and oracle_signal == 'ORACLE_BEAR' and current_price < current_vwap:
                     combined_signal = 'SHORT'
 
                 # 4. Consultar posición activa
@@ -745,7 +764,7 @@ class BinanceRsiDivergenceBot:
                 sig_orc_str = "BULL" if oracle_signal == 'ORACLE_BULL' else ("BEAR" if oracle_signal == 'ORACLE_BEAR' else "NEUT")
                 sig_comb_str = combined_signal if combined_signal else "ESPERANDO"
 
-                line_str = f"[{now_str}] {self.symbol}: ${current_price:<8.2f} | RSI: {current_rsi:<4.1f} | Oracle: {oracle_val:<4.1f} ({sig_orc_str}) | Div: {sig_rsi_str:<7} | {bal_str} | Señal: {sig_comb_str:<8} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
+                line_str = f"[{now_str}] {self.symbol}: ${current_price:<8.2f} | VWAP: ${current_vwap:<8.2f} | RSI: {current_rsi:<4.1f} | Oracle: {oracle_val:<4.1f} ({sig_orc_str}) | Div: {sig_rsi_str:<7} | {bal_str} | Señal: {sig_comb_str:<8} | Estado: {status_color}{pos_str}{Style.RESET_ALL}"
                 sys.stdout.write(f"\r\033[K{line_str}")
                 sys.stdout.flush()
 
