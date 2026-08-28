@@ -3,9 +3,9 @@
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
 Estrategia: Confluencia Divergencias RSI + Oscilador Oracle + VWAP en Velas de 1 Minuto
-Modo: Aislado (Isolated) | Apalancamiento: 10x | Margen: 5 USDT
+Modo: Aislado (Isolated) | Apalancamiento: 10x | Margen: 50 USDT
 Take Profit: +3% ROI (sobre lo invertido)
-Stop Loss: -3% ROI (sobre lo invertido)
+Stop Loss: -2% ROI (sobre lo invertido)
 """
 
 import os
@@ -59,11 +59,11 @@ class BinanceRsiDivergenceBot:
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
         self.api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
+        self.margin_usdt = float(os.getenv("MARGIN_USDT", "50.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "3.0"))
-        self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "3.0"))
+        self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "2.0"))
         self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
         self.pivot_left = int(os.getenv("PIVOT_LOOKBACK_LEFT", "5"))
         self.pivot_right = int(os.getenv("PIVOT_LOOKBACK_RIGHT", "2"))
@@ -96,6 +96,10 @@ class BinanceRsiDivergenceBot:
         self.money_lost = 0.0
         self.position_start_time = 0
         self.entry_time = None
+
+        # Seguimiento de % ganancia y % pérdida máximo durante la operación
+        self.max_pnl_pct = 0.0
+        self.min_pnl_pct = 0.0
 
         self._initialize_client()
 
@@ -256,6 +260,8 @@ class BinanceRsiDivergenceBot:
             self.entry_price = 0.0
             self.position_qty = 0.0
             self.entry_time = None
+            self.max_pnl_pct = 0.0
+            self.min_pnl_pct = 0.0
             print("[OK] Modo Simulación (DRY-RUN): Posición inicial restablecida a SIN POSICIÓN.")
             return
 
@@ -302,6 +308,8 @@ class BinanceRsiDivergenceBot:
             self.entry_price = 0.0
             self.position_qty = 0.0
             self.entry_time = None
+            self.max_pnl_pct = 0.0
+            self.min_pnl_pct = 0.0
 
         except Exception as e:
             print(f"[!] Error cerrando posiciones abiertas al iniciar: {e}")
@@ -512,7 +520,6 @@ class BinanceRsiDivergenceBot:
         tp_price, sl_price = self.calculate_tp_sl(side, current_price)
         side_colored = Fore.CYAN + side + Style.RESET_ALL
 
-        print("=" * 65)
         print(f"[🚀 SEÑAL ENCONTRADA] Entrada {side_colored} detectada en {current_price}")
         print(f" -> Margen: {self.margin_usdt} USDT | Apalancamiento: {self.leverage}x | Posición Nocional: {notional_val} USDT | Cantidad: {qty} {self.symbol}")
         print(f" -> Take Profit (+{self.tp_roi_pct}% ROI): {tp_price} | Stop Loss (-{self.sl_roi_pct}% ROI): {sl_price}")
@@ -525,6 +532,8 @@ class BinanceRsiDivergenceBot:
             self.sl_price = sl_price
             self.position_start_time = int(time.time() * 1000)
             self.entry_time = datetime.now()
+            self.max_pnl_pct = 0.0
+            self.min_pnl_pct = 0.0
             print(f"[SIMULACIÓN] Posición {side_colored} abierta exitosamente a {current_price}")
             return True
 
@@ -593,6 +602,8 @@ class BinanceRsiDivergenceBot:
             self.sl_price = sl_price
             self.position_start_time = int(time.time() * 1000)
             self.entry_time = datetime.now()
+            self.max_pnl_pct = 0.0
+            self.min_pnl_pct = 0.0
             return True
 
         except Exception as e:
@@ -708,16 +719,33 @@ class BinanceRsiDivergenceBot:
             dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
             pos_colored = Fore.CYAN + pos + Style.RESET_ALL
 
+            if self.entry_price > 0:
+                if pos == 'LONG':
+                    exit_pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
+                else:
+                    exit_pnl_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
+                if exit_pnl_pct > self.max_pnl_pct:
+                    self.max_pnl_pct = exit_pnl_pct
+                if exit_pnl_pct < self.min_pnl_pct:
+                    self.min_pnl_pct = exit_pnl_pct
+
+            max_gain_str = f"{Fore.CYAN}% Ganancia Máximo: +{self.max_pnl_pct:.2f}%{Style.RESET_ALL}"
+            max_loss_str = f"{Fore.CYAN}% Pérdida Máximo: {self.min_pnl_pct:.2f}%{Style.RESET_ALL}"
+
             if hit_tp:
                 pnl = self.margin_usdt * (self.tp_roi_pct / 100.0)
                 self.simulated_balance += pnl
                 self._record_trade_result(pnl)
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+                pnl_pct_str = f"{Fore.CYAN}% Ganancia No Realizada: +{self.tp_roi_pct:.2f}%{Style.RESET_ALL}"
                 print(f"[🎯 TAKE PROFIT ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
-                print(f" -> PnL: +{pnl:.2f} USDT (+{self.tp_roi_pct}% ROI)")
+                print(f" -> PnL: +{pnl:.2f} USDT ({pnl_pct_str})")
+                print(f" -> {max_gain_str} | {max_loss_str}")
                 self.current_position = None
                 self.entry_time = None
+                self.max_pnl_pct = 0.0
+                self.min_pnl_pct = 0.0
                 self.show_trade_stats()
             elif hit_sl:
                 pnl = -self.margin_usdt * (self.sl_roi_pct / 100.0)
@@ -725,10 +753,14 @@ class BinanceRsiDivergenceBot:
                 self._record_trade_result(pnl)
                 sys.stdout.write("\n")
                 sys.stdout.flush()
+                pnl_pct_str = f"{Fore.CYAN}% Pérdida No Realizada: -{self.sl_roi_pct:.2f}%{Style.RESET_ALL}"
                 print(f"[🛑 STOP LOSS ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
-                print(f" -> PnL: {pnl:.2f} USDT (-{self.sl_roi_pct}% ROI)")
+                print(f" -> PnL: {pnl:.2f} USDT ({pnl_pct_str})")
+                print(f" -> {max_gain_str} | {max_loss_str}")
                 self.current_position = None
                 self.entry_time = None
+                self.max_pnl_pct = 0.0
+                self.min_pnl_pct = 0.0
                 self.show_trade_stats()
 
     def run(self):
@@ -796,17 +828,56 @@ class BinanceRsiDivergenceBot:
                         else:
                             pnl = (self.entry_price - current_price) * self.position_qty
 
+                    pnl_pct = (pnl / self.margin_usdt) * 100.0 if self.margin_usdt > 0 else 0.0
+                    if pnl_pct > self.max_pnl_pct:
+                        self.max_pnl_pct = pnl_pct
+                    if pnl_pct < self.min_pnl_pct:
+                        self.min_pnl_pct = pnl_pct
+
+                    if pnl >= 0:
+                        pnl_pct_str = f"{Fore.CYAN}% Ganancia No Realizada: +{pnl_pct:.2f}%{Style.RESET_ALL}"
+                    else:
+                        pnl_pct_str = f"{Fore.CYAN}% Pérdida No Realizada: {pnl_pct:.2f}%{Style.RESET_ALL}"
+
+                    max_gain_str = f"{Fore.CYAN}% Ganancia Máximo: +{self.max_pnl_pct:.2f}%{Style.RESET_ALL}"
+                    max_loss_str = f"{Fore.CYAN}% Pérdida Máximo: {self.min_pnl_pct:.2f}%{Style.RESET_ALL}"
+
+                    print(f" -> PnL: {pnl:+.2f} USDT ({pnl_pct_str})")
+                    print(f" -> {max_gain_str} | {max_loss_str}")
+
                     self._record_trade_result(pnl)
                     self.current_position = None
                     self.entry_time = None
+                    self.max_pnl_pct = 0.0
+                    self.min_pnl_pct = 0.0
                     self.show_trade_stats()
 
                 # Formato de consola de estado en pantalla
                 if active_pos:
                     dur_mins = (datetime.now() - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
                     dur_str = f" ({Fore.CYAN}Duración: {dur_mins:.1f}m{Style.RESET_ALL})"
+                    if entry > 0:
+                        if active_pos == 'LONG':
+                            pnl_pct = ((current_price - entry) / entry) * self.leverage * 100.0
+                        else:  # SHORT
+                            pnl_pct = ((entry - current_price) / entry) * self.leverage * 100.0
+                    else:
+                        pnl_pct = 0.0
+
+                    # Registrar máximo beneficio y máxima pérdida detectados durante la posición
+                    if pnl_pct > self.max_pnl_pct:
+                        self.max_pnl_pct = pnl_pct
+                    if pnl_pct < self.min_pnl_pct:
+                        self.min_pnl_pct = pnl_pct
+
+                    if pnl_pct >= 0:
+                        pnl_pct_text = f"% Ganancia No Realizada: +{pnl_pct:.2f}%"
+                    else:
+                        pnl_pct_text = f"% Pérdida No Realizada: {pnl_pct:.2f}%"
+
+                    pnl_str = f" ({Fore.CYAN}{pnl_pct_text}{Style.RESET_ALL})"
                     pos_colored = Fore.CYAN + active_pos + Style.RESET_ALL
-                    pos_str = f"{pos_colored} @ {entry:.2f}{dur_str}"
+                    pos_str = f"{pos_colored} @ {entry:.2f}{pnl_str}{dur_str}"
                 else:
                     pos_str = "SIN POSICIÓN"
 
