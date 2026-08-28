@@ -78,6 +78,7 @@ class BinanceRsiDivergenceBot:
         self.min_qty = 0.001
         self.tick_size = 0.01
         self.step_size = 0.001
+        self.last_lines_printed = 1
         
         # Estado de posición (para Dry-Run y tracking)
         self.current_position = None  # None, 'LONG', 'SHORT'
@@ -513,6 +514,11 @@ class BinanceRsiDivergenceBot:
 
     def open_position(self, side, current_price):
         """Abre posición LONG o SHORT en Binance Futures con órdenes TP y SL."""
+        if getattr(self, 'last_lines_printed', 1) == 2:
+            sys.stdout.write("\r\033[K\033[1A\r\033[K")
+            self.last_lines_printed = 1
+            sys.stdout.flush()
+
         notional_val = self.margin_usdt * self.leverage
         raw_qty = notional_val / current_price
         qty = self._format_quantity(raw_qty)
@@ -736,11 +742,15 @@ class BinanceRsiDivergenceBot:
                 pnl = self.margin_usdt * (self.tp_roi_pct / 100.0)
                 self.simulated_balance += pnl
                 self._record_trade_result(pnl)
-                sys.stdout.write("\n")
+                if getattr(self, 'last_lines_printed', 1) == 2:
+                    sys.stdout.write("\r\033[K\033[1A\r\033[K")
+                    self.last_lines_printed = 1
+                else:
+                    sys.stdout.write("\n")
                 sys.stdout.flush()
-                pnl_pct_str = f"{Fore.CYAN}% Ganancia No Realizada: +{self.tp_roi_pct:.2f}%{Style.RESET_ALL}"
+                pnl_pct_str = f"{Fore.GREEN}% Ganancia No Realizada: +{self.tp_roi_pct:.2f}%{Style.RESET_ALL}"
                 print(f"[🎯 TAKE PROFIT ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
-                print(f" -> PnL: +{pnl:.2f} USDT ({pnl_pct_str})")
+                print(f" -> {pnl_pct_str}")
                 print(f" -> {max_gain_str} | {max_loss_str}")
                 self.current_position = None
                 self.entry_time = None
@@ -751,11 +761,15 @@ class BinanceRsiDivergenceBot:
                 pnl = -self.margin_usdt * (self.sl_roi_pct / 100.0)
                 self.simulated_balance += pnl
                 self._record_trade_result(pnl)
-                sys.stdout.write("\n")
+                if getattr(self, 'last_lines_printed', 1) == 2:
+                    sys.stdout.write("\r\033[K\033[1A\r\033[K")
+                    self.last_lines_printed = 1
+                else:
+                    sys.stdout.write("\n")
                 sys.stdout.flush()
-                pnl_pct_str = f"{Fore.CYAN}% Pérdida No Realizada: -{self.sl_roi_pct:.2f}%{Style.RESET_ALL}"
+                pnl_pct_str = f"{Fore.RED}% Pérdida No Realizada: -{self.sl_roi_pct:.2f}%{Style.RESET_ALL}"
                 print(f"[🛑 STOP LOSS ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
-                print(f" -> PnL: {pnl:.2f} USDT ({pnl_pct_str})")
+                print(f" -> {pnl_pct_str}")
                 print(f" -> {max_gain_str} | {max_loss_str}")
                 self.current_position = None
                 self.entry_time = None
@@ -808,7 +822,11 @@ class BinanceRsiDivergenceBot:
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
                     pos_colored = Fore.CYAN + self.current_position + Style.RESET_ALL
 
-                    sys.stdout.write("\n")
+                    if getattr(self, 'last_lines_printed', 1) == 2:
+                        sys.stdout.write("\r\033[K\033[1A\r\033[K")
+                        self.last_lines_printed = 1
+                    else:
+                        sys.stdout.write("\n")
                     sys.stdout.flush()
                     print(f"[ℹ] Posición {pos_colored} cerrada en Binance. Cancelando órdenes pendientes huérfanas...")
                     try:
@@ -835,14 +853,14 @@ class BinanceRsiDivergenceBot:
                         self.min_pnl_pct = pnl_pct
 
                     if pnl >= 0:
-                        pnl_pct_str = f"{Fore.CYAN}% Ganancia No Realizada: +{pnl_pct:.2f}%{Style.RESET_ALL}"
+                        pnl_pct_str = f"{Fore.GREEN}% Ganancia No Realizada: +{pnl_pct:.2f}%{Style.RESET_ALL}"
                     else:
-                        pnl_pct_str = f"{Fore.CYAN}% Pérdida No Realizada: {pnl_pct:.2f}%{Style.RESET_ALL}"
+                        pnl_pct_str = f"{Fore.RED}% Pérdida No Realizada: {pnl_pct:.2f}%{Style.RESET_ALL}"
 
                     max_gain_str = f"{Fore.CYAN}% Ganancia Máximo: +{self.max_pnl_pct:.2f}%{Style.RESET_ALL}"
                     max_loss_str = f"{Fore.CYAN}% Pérdida Máximo: {self.min_pnl_pct:.2f}%{Style.RESET_ALL}"
 
-                    print(f" -> PnL: {pnl:+.2f} USDT ({pnl_pct_str})")
+                    print(f" -> {pnl_pct_str}")
                     print(f" -> {max_gain_str} | {max_loss_str}")
 
                     self._record_trade_result(pnl)
@@ -853,6 +871,7 @@ class BinanceRsiDivergenceBot:
                     self.show_trade_stats()
 
                 # Formato de consola de estado en pantalla
+                pnl_pct_line = ""
                 if active_pos:
                     dur_mins = (datetime.now() - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
                     dur_str = f" ({Fore.CYAN}Duración: {dur_mins:.1f}m{Style.RESET_ALL})"
@@ -871,13 +890,12 @@ class BinanceRsiDivergenceBot:
                         self.min_pnl_pct = pnl_pct
 
                     if pnl_pct >= 0:
-                        pnl_pct_text = f"% Ganancia No Realizada: +{pnl_pct:.2f}%"
+                        pnl_pct_line = f"{Fore.GREEN}% Ganancia No Realizada: +{pnl_pct:.2f}%{Style.RESET_ALL}"
                     else:
-                        pnl_pct_text = f"% Pérdida No Realizada: {pnl_pct:.2f}%"
+                        pnl_pct_line = f"{Fore.RED}% Pérdida No Realizada: {pnl_pct:.2f}%{Style.RESET_ALL}"
 
-                    pnl_str = f" ({Fore.CYAN}{pnl_pct_text}{Style.RESET_ALL})"
                     pos_colored = Fore.CYAN + active_pos + Style.RESET_ALL
-                    pos_str = f"{pos_colored} @ {entry:.2f}{pnl_str}{dur_str}"
+                    pos_str = f"{pos_colored} @ {entry:.2f}{dur_str}"
                 else:
                     pos_str = "SIN POSICIÓN"
 
@@ -903,14 +921,27 @@ class BinanceRsiDivergenceBot:
                     f"{estado_label}{pos_str}"
                 )
 
+                if getattr(self, 'last_lines_printed', 1) == 2:
+                    sys.stdout.write("\r\033[K\033[1A\r\033[K")
+
                 line_str = self._fit_to_terminal(line_str, cols)
 
-                sys.stdout.write(f"\r\033[K{line_str}")
+                if active_pos:
+                    sys.stdout.write(f"\r\033[K{line_str}\n\r\033[K{pnl_pct_line}")
+                    self.last_lines_printed = 2
+                else:
+                    sys.stdout.write(f"\r\033[K{line_str}")
+                    self.last_lines_printed = 1
+
                 sys.stdout.flush()
 
                 # 6. Lógica de entrada si no hay posición activa
                 if active_pos is None and combined_signal:
-                    sys.stdout.write("\n")
+                    if getattr(self, 'last_lines_printed', 1) == 2:
+                        sys.stdout.write("\r\033[K\033[1A\r\033[K")
+                        self.last_lines_printed = 1
+                    else:
+                        sys.stdout.write("\n")
                     sys.stdout.flush()
                     self.open_position(combined_signal, current_price)
 
