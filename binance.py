@@ -625,6 +625,19 @@ class BinanceRsiDivergenceBot:
             self.losing_trades += 1
             self.money_lost += abs(pnl)
 
+    def _save_trade_to_file(self, exit_type, max_gain_pct, max_loss_pct, dur_mins):
+        """
+        Guarda los datos de la operación cerrada en tp.txt o sl.txt.
+        Datos: % ganancia maximo, % perdida maximo, duracion de la operacion
+        """
+        filename = "tp.txt" if exit_type.lower() == "tp" else "sl.txt"
+        try:
+            line = f"% Ganancia Máximo: +{max_gain_pct:.2f}%, % Pérdida Máximo: {max_loss_pct:.2f}%, Duración: {dur_mins:.1f}m\n"
+            with open(filename, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception as e:
+            logging.error(f"Error al guardar datos en {filename}: {e}")
+
     @staticmethod
     def _fit_to_terminal(text, max_cols):
         """Trunca la línea respetando secuencias ANSI de color para que no supere max_cols y no haga salto de línea."""
@@ -735,8 +748,7 @@ class BinanceRsiDivergenceBot:
                 if exit_pnl_pct < self.min_pnl_pct:
                     self.min_pnl_pct = exit_pnl_pct
 
-            max_gain_str = f"{Fore.CYAN}% Ganancia Máximo: +{self.max_pnl_pct:.2f}%{Style.RESET_ALL}"
-            max_loss_str = f"{Fore.CYAN}% Pérdida Máximo: {self.min_pnl_pct:.2f}%{Style.RESET_ALL}"
+            max_info_str = f"{Fore.CYAN} -> % Ganancia Máximo: +{self.max_pnl_pct:.2f}% | % Pérdida Máximo: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m{Style.RESET_ALL}"
 
             if hit_tp:
                 pnl = self.margin_usdt * (self.tp_roi_pct / 100.0)
@@ -751,7 +763,8 @@ class BinanceRsiDivergenceBot:
                 pnl_pct_str = f"{Fore.GREEN}% Ganancia No Realizada: +{self.tp_roi_pct:.2f}%{Style.RESET_ALL}"
                 print(f"[🎯 TAKE PROFIT ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
                 print(f" -> {pnl_pct_str}")
-                print(f" -> {max_gain_str} | {max_loss_str}")
+                print(max_info_str)
+                self._save_trade_to_file("tp", self.max_pnl_pct, self.min_pnl_pct, dur_mins)
                 self.current_position = None
                 self.entry_time = None
                 self.max_pnl_pct = 0.0
@@ -770,7 +783,8 @@ class BinanceRsiDivergenceBot:
                 pnl_pct_str = f"{Fore.RED}% Pérdida No Realizada: -{self.sl_roi_pct:.2f}%{Style.RESET_ALL}"
                 print(f"[🛑 STOP LOSS ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
                 print(f" -> {pnl_pct_str}")
-                print(f" -> {max_gain_str} | {max_loss_str}")
+                print(max_info_str)
+                self._save_trade_to_file("sl", self.max_pnl_pct, self.min_pnl_pct, dur_mins)
                 self.current_position = None
                 self.entry_time = None
                 self.max_pnl_pct = 0.0
@@ -857,11 +871,13 @@ class BinanceRsiDivergenceBot:
                     else:
                         pnl_pct_str = f"{Fore.RED}% Pérdida No Realizada: {pnl_pct:.2f}%{Style.RESET_ALL}"
 
-                    max_gain_str = f"{Fore.CYAN}% Ganancia Máximo: +{self.max_pnl_pct:.2f}%{Style.RESET_ALL}"
-                    max_loss_str = f"{Fore.CYAN}% Pérdida Máximo: {self.min_pnl_pct:.2f}%{Style.RESET_ALL}"
+                    max_info_str = f"{Fore.CYAN} -> % Ganancia Máximo: +{self.max_pnl_pct:.2f}% | % Pérdida Máximo: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m{Style.RESET_ALL}"
 
                     print(f" -> {pnl_pct_str}")
-                    print(f" -> {max_gain_str} | {max_loss_str}")
+                    print(max_info_str)
+
+                    target_file = "tp" if pnl >= 0 else "sl"
+                    self._save_trade_to_file(target_file, self.max_pnl_pct, self.min_pnl_pct, dur_mins)
 
                     self._record_trade_result(pnl)
                     self.current_position = None
