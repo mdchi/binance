@@ -15,7 +15,7 @@ import math
 import logging
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone, timedelta, time as dtime
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -71,6 +71,12 @@ class BinanceRsiDivergenceBot:
         self.dry_run = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
+        # Configuración de Filtro de Horario de Trading (Bolsa EE.UU. 10:30 - 17:00 hs Buenos Aires)
+        self.enable_schedule = os.getenv("ENABLE_SCHEDULE_FILTER", "True").lower() in ("true", "1", "yes")
+        self.schedule_start_str = os.getenv("SCHEDULE_START", "10:30").strip()
+        self.schedule_end_str = os.getenv("SCHEDULE_END", "17:00").strip()
+        self.schedule_weekdays_only = os.getenv("SCHEDULE_WEEKDAYS_ONLY", "True").lower() in ("true", "1", "yes")
+
         # Variables de estado interno
         self.client = None
         self.price_precision = 2
@@ -115,6 +121,11 @@ class BinanceRsiDivergenceBot:
         print(f"Monto por Operación: {self.margin_usdt} USDT")
         print(f"Take Profit (TP): +{self.tp_roi_pct}% ROI ({(self.tp_roi_pct/self.leverage):.2f}% en precio)")
         print(f"Stop Loss (SL): -{self.sl_roi_pct}% ROI ({(self.sl_roi_pct/self.leverage):.2f}% en precio)")
+        if self.enable_schedule:
+            week_str = " (Lunes a Viernes)" if self.schedule_weekdays_only else ""
+            print(f"Filtro Horario de Bolsa: {self.schedule_start_str} a {self.schedule_end_str} hs (Buenos Aires / UTC-3){week_str}")
+        else:
+            print("Filtro Horario de Bolsa: DESACTIVADO")
         print(f"Modo Dry-Run (Simulación): {self.dry_run}")
         print(f"Binance Testnet: {self.use_testnet}")
 
@@ -791,6 +802,40 @@ class BinanceRsiDivergenceBot:
                 self.min_pnl_pct = 0.0
                 self.show_trade_stats()
 
+    def is_within_trading_hours(self):
+        """
+        Verifica si la hora actual en Buenos Aires (UTC-3) está dentro del horario de operaciones permitido.
+        Por defecto: 10:30 a 17:00 hs ART, de Lunes a Viernes.
+        """
+        if not self.enable_schedule:
+            return True, "Filtro desactivado"
+
+        # Zona horaria Buenos Aires (UTC-3 constante)
+        ba_tz = timezone(timedelta(hours=-3))
+        now_ba = datetime.now(ba_tz)
+
+        # Verificar días hábiles (Lunes = 0, Viernes = 4, Sábado = 5, Domingo = 6)
+        if self.schedule_weekdays_only and now_ba.weekday() >= 5:
+            day_name = "Sábado" if now_ba.weekday() == 5 else "Domingo"
+            return False, f"Fin de semana ({day_name})"
+
+        try:
+            sh, sm = map(int, self.schedule_start_str.split(':'))
+            eh, em = map(int, self.schedule_end_str.split(':'))
+            start_time = dtime(sh, sm)
+            end_time = dtime(eh, em)
+        except Exception as e:
+            logging.error(f"Error parseando horario de trading ({self.schedule_start_str}-{self.schedule_end_str}): {e}")
+            return True, "Error formato horario"
+
+        current_time = now_ba.time()
+        is_inside = start_time <= current_time < end_time
+
+        if is_inside:
+            return True, f"Horario Bolsa ({self.schedule_start_str}-{self.schedule_end_str} ART)"
+        else:
+            return False, f"Fuera de Horario ({self.schedule_start_str}-{self.schedule_end_str} ART)"
+
     def run(self):
         """Bucle principal de ejecución del bot."""
         print(f"[Iniciando Monitoreo] Analizando {self.symbol} en velas de {self.timeframe}...")
@@ -927,6 +972,14 @@ class BinanceRsiDivergenceBot:
 
                 cols = shutil.get_terminal_size(fallback=(160, 24)).columns
 
+                # Verificar horario de operaciones (Bolsa EE.UU. 10:30 a 17:00 Buenos Aires)
+                is_within_hours, schedule_reason = self.is_within_trading_hours()
+
+                if not is_within_hours:
+                    horario_badge = f"{Fore.YELLOW}[CERRADO: {schedule_reason}]{Style.RESET_ALL}"
+                else:
+                    horario_badge = f"{Fore.GREEN}[ABIERTO]{Style.RESET_ALL}"
+
                 line_str = (
                     f"{self.symbol}: ${current_price:.2f} | "
                     f"VWAP: ${current_vwap:.2f} | "
@@ -934,6 +987,7 @@ class BinanceRsiDivergenceBot:
                     f"Oracle: {oracle_val:.1f} ({sig_orc_str}) | "
                     f"Div: {sig_rsi_str} | "
                     f"Señal: {sig_comb_str} | "
+                    f"Horario: {horario_badge} | "
                     f"{estado_label}{pos_str}"
                 )
 
@@ -953,13 +1007,22 @@ class BinanceRsiDivergenceBot:
 
                 # 6. Lógica de entrada si no hay posición activa
                 if active_pos is None and combined_signal:
-                    if getattr(self, 'last_lines_printed', 1) == 2:
-                        sys.stdout.write("\r\033[K\033[1A\r\033[K")
-                        self.last_lines_printed = 1
+                    if self.enable_schedule and not is_within_hours:
+                        if getattr(self, 'last_lines_printed', 1) == 2:
+                            sys.stdout.write("\r\033[K\033[1A\r\033[K")
+                            self.last_lines_printed = 1
+                        else:
+                            sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        print(f"[⏰ FUERA DE HORARIO] Señal {combined_signal} ignorada por estar fuera de horario de bolsa ({schedule_reason}).")
                     else:
-                        sys.stdout.write("\n")
-                    sys.stdout.flush()
-                    self.open_position(combined_signal, current_price)
+                        if getattr(self, 'last_lines_printed', 1) == 2:
+                            sys.stdout.write("\r\033[K\033[1A\r\033[K")
+                            self.last_lines_printed = 1
+                        else:
+                            sys.stdout.write("\n")
+                        sys.stdout.flush()
+                        self.open_position(combined_signal, current_price)
 
                 # Esperar 10 segundos antes de la siguiente verificación
                 time.sleep(10)
