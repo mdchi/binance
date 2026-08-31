@@ -635,14 +635,17 @@ class BinanceRsiDivergenceBot:
             self.losing_trades += 1
             self.money_lost += abs(pnl)
 
-    def _save_trade_to_file(self, exit_type, max_gain_pct, max_loss_pct, dur_mins):
+    def _save_trade_to_file(self, exit_type, max_gain_pct, max_loss_pct, dur_mins, exit_time=None):
         """
         Guarda los datos de la operación cerrada en tp.txt o sl.txt.
-        Datos: % ganancia maximo, % perdida maximo, duracion de la operacion
+        Datos: hora, %ganancia maximo, % perdida maximo, duracion de la operacion
         """
         filename = "tp.txt" if exit_type.lower() == "tp" else "sl.txt"
+        if exit_time is None:
+            exit_time = datetime.now()
+        hora_str = exit_time.strftime('%H:%M:%S')
         try:
-            line = f"% Ganancia Máximo: +{max_gain_pct:.2f}%, % Pérdida Máximo: {max_loss_pct:.2f}%, Duración: {dur_mins:.1f}m\n"
+            line = f"Hora: {hora_str}, % Ganancia Máximo: +{max_gain_pct:.2f}%, % Pérdida Máximo: {max_loss_pct:.2f}%, Duración: {dur_mins:.1f}m\n"
             with open(filename, "a", encoding="utf-8") as f:
                 f.write(line)
         except Exception as e:
@@ -771,7 +774,7 @@ class BinanceRsiDivergenceBot:
                 print(f"[🎯 TAKE PROFIT ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
                 print(f" -> {pnl_pct_str}")
                 print(max_info_str)
-                self._save_trade_to_file("tp", self.max_pnl_pct, self.min_pnl_pct, dur_mins)
+                self._save_trade_to_file("tp", self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
                 self.current_position = None
                 self.entry_time = None
                 self.max_pnl_pct = 0.0
@@ -788,7 +791,7 @@ class BinanceRsiDivergenceBot:
                 print(f"[🛑 STOP LOSS ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
                 print(f" -> {pnl_pct_str}")
                 print(max_info_str)
-                self._save_trade_to_file("sl", self.max_pnl_pct, self.min_pnl_pct, dur_mins)
+                self._save_trade_to_file("sl", self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
                 self.current_position = None
                 self.entry_time = None
                 self.max_pnl_pct = 0.0
@@ -912,7 +915,7 @@ class BinanceRsiDivergenceBot:
                     print(max_info_str)
 
                     target_file = "tp" if pnl >= 0 else "sl"
-                    self._save_trade_to_file(target_file, self.max_pnl_pct, self.min_pnl_pct, dur_mins)
+                    self._save_trade_to_file(target_file, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
 
                     self._record_trade_result(pnl)
                     self.current_position = None
