@@ -2,10 +2,11 @@
 # -*- coding: utf-8 -*-
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia: Confluencia Divergencias RSI + Oscilador Oracle + VWAP en Velas de 1 Minuto
+Estrategia: Confluencia Divergencias RSI + Oscilador Oracle + VWAP en Velas de 15 Minutos
 Modo: Aislado (Isolated) | Apalancamiento: 10x | Margen: 50 USDT
-Take Profit: +3% ROI (sobre lo invertido)
-Stop Loss: -2% ROI (sobre lo invertido)
+Take Profit: +10% ROI (sobre el monto de la operación)
+Stop Loss: -10% ROI (sobre el monto de la operación)
+Horario de Operaciones: 10:30 a 17:00 hs (Horario Buenos Aires)
 """
 
 import os
@@ -61,9 +62,9 @@ class BinanceRsiDivergenceBot:
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "50.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
-        self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "3.0"))
-        self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "2.0"))
+        self.timeframe = os.getenv("TIMEFRAME", "15m")
+        self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "10.0"))
+        self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "10.0"))
         self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
         self.pivot_left = int(os.getenv("PIVOT_LOOKBACK_LEFT", "5"))
         self.pivot_right = int(os.getenv("PIVOT_LOOKBACK_RIGHT", "2"))
@@ -113,7 +114,7 @@ class BinanceRsiDivergenceBot:
     def _initialize_client(self):
         """Inicializa el cliente Binance API y obtiene precisión del símbolo."""
         print("=" * 65)
-        print("   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (1m) ")
+        print("   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (15m) ")
         print("=" * 65)
         print(f"Símbolo: {self.symbol}")
         print("Modo de Margen: AISLADO (ISOLATED)")
@@ -487,10 +488,10 @@ class BinanceRsiDivergenceBot:
 
     def calculate_tp_sl(self, side, entry_price):
         """
-        Calcula precios exactos de Take Profit (+3% ROI) y Stop Loss (-3% ROI).
+        Calcula precios exactos de Take Profit (+10% ROI) y Stop Loss (-10% ROI).
         Apalancamiento 10x:
-        +3% ROI = +0.3% de variación de precio
-        -3% ROI = -0.3% de variación de precio
+        +10% ROI = +1.0% de variación de precio
+        -10% ROI = -1.0% de variación de precio
         """
         price_tp_pct = (self.tp_roi_pct / 100.0) / self.leverage
         price_sl_pct = (self.sl_roi_pct / 100.0) / self.leverage
