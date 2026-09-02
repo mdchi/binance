@@ -630,7 +630,10 @@ class BinanceRsiDivergenceBot:
         )
 
     def render_screen(self, current_price, current_vwap, current_rsi, oracle_val, sig_orc_str, rsi_signal, combined_signal, active_pos, entry, qty, pnl_pct, dur_mins, is_within_hours, schedule_reason):
-        """Limpia la pantalla y muestra la cabecera fija junto con la línea del estado actual (sin colores)."""
+        """Limpia la pantalla antes de actualizar y muestra únicamente la cabecera fija con el estado actual (sin colores)."""
+        # Borrar pantalla de consola antes de actualizar la visualización de datos
+        os.system('cls' if os.name == 'nt' else 'clear')
+
         # 1. Saldo de cuenta
         if self.dry_run:
             wallet_bal = self.simulated_balance
