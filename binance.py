@@ -696,19 +696,15 @@ class BinanceRsiDivergenceBot:
         lines.append(f"Tiempo Total: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("=" * 65)
         lines.append("ESTADO ACTUAL:")
-        
-        status_line = (
-            f"{self.symbol}: ${current_price:.2f} | "
-            f"VWAP: ${current_vwap:.2f} | "
-            f"RSI: {current_rsi:.1f} | "
-            f"Oracle: {oracle_val:.1f} ({sig_orc_str}) | "
-            f"Div: {sig_rsi_str} | "
-            f"Señal: {sig_comb_str} | "
-            f"Horario: {horario_badge} | "
-            f"Estado: {pos_str}"
-        )
-        status_line = self._fit_to_terminal(status_line, cols)
-        lines.append(status_line)
+        line_1 = f"   Precio: ${current_price:.2f} ({self.symbol})"
+        line_2 = f"   RSI: {current_rsi:.1f} | Oracle: {oracle_val:.1f} ({sig_orc_str}) | VWAP: ${current_vwap:.2f}"
+        line_3 = f"   Divergencia RSI: {sig_rsi_str}"
+        line_4 = f"   Señal Confluencia: {sig_comb_str}"
+        line_5 = f"   Horario: {horario_badge}"
+        line_6 = f"   Posición: {pos_str}"
+
+        for status_line in [line_1, line_2, line_3, line_4, line_5, line_6]:
+            lines.append(self._fit_to_terminal(status_line, cols))
         lines.append("=" * 65)
 
         output_buffer = "\033[H\033[J" + "\n".join(lines) + "\n"
