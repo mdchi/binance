@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia: Confluencia Divergencias RSI + Oscilador Oracle + VWAP en Velas de 15 Minutos
+Estrategia: Confluencia Divergencias RSI + Oscilador Oracle + VWAP en Velas de 5 Minutos
 Modo: Aislado (Isolated) | Apalancamiento: 10x | Margen: 50 USDT
 Take Profit: +10% ROI (sobre el monto de la operación)
 Stop Loss: -10% ROI (sobre el monto de la operación)
@@ -58,7 +58,7 @@ class BinanceRsiDivergenceBot:
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "50.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
-        self.timeframe = os.getenv("TIMEFRAME", "15m")
+        self.timeframe = os.getenv("TIMEFRAME", "5m")
         self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "10.0"))
         self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "10.0"))
         self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
@@ -673,7 +673,7 @@ class BinanceRsiDivergenceBot:
 
         lines = []
         lines.append("=" * 65)
-        lines.append("   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (15m)")
+        lines.append("   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (5m)")
         lines.append("=" * 65)
         lines.append(f"Símbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
         lines.append(f"Take Profit (TP): +{self.tp_roi_pct}% ROI | Stop Loss (SL): -{self.sl_roi_pct}% ROI")
@@ -833,8 +833,8 @@ class BinanceRsiDivergenceBot:
         
         while True:
             try:
-                # 1. Obtener datos de mercado
-                df = self.fetch_klines(limit=150)
+                # 1. Obtener datos de mercado (500 velas para abarcar todo el día UTC en el VWAP)
+                df = self.fetch_klines(limit=500)
                 if df is None or len(df) == 0:
                     time.sleep(10)
                     continue
