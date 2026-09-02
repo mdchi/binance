@@ -20,7 +20,6 @@ from datetime import datetime, timezone, timedelta, time as dtime
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
-from colorama import init, Fore, Style
 
 # Configuración de encoding para consola Windows
 if hasattr(sys.stdout, 'reconfigure'):
@@ -29,15 +28,12 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# Inicializar colorama para mensajes formateados en consola
-init(autoreset=True)
-
-# Configuración de Logging
+# Configuración de Logging (a archivo para no ensuciar la pantalla de consola)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.FileHandler("bot.log", encoding="utf-8")
     ]
 )
 
@@ -113,26 +109,9 @@ class BinanceRsiDivergenceBot:
 
     def _initialize_client(self):
         """Inicializa el cliente Binance API y obtiene precisión del símbolo."""
-        print("=" * 65)
-        print("   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (15m) ")
-        print("=" * 65)
-        print(f"Símbolo: {self.symbol}")
-        print("Modo de Margen: AISLADO (ISOLATED)")
-        print(f"Apalancamiento: {self.leverage}x")
-        print(f"Monto por Operación: {self.margin_usdt} USDT")
-        print(f"Take Profit (TP): +{self.tp_roi_pct}% ROI ({(self.tp_roi_pct/self.leverage):.2f}% en precio)")
-        print(f"Stop Loss (SL): -{self.sl_roi_pct}% ROI ({(self.sl_roi_pct/self.leverage):.2f}% en precio)")
-        if self.enable_schedule:
-            week_str = " (Lunes a Viernes)" if self.schedule_weekdays_only else ""
-            print(f"Filtro Horario de Bolsa: {self.schedule_start_str} a {self.schedule_end_str} hs (Buenos Aires / UTC-3){week_str}")
-        else:
-            print("Filtro Horario de Bolsa: DESACTIVADO")
-        print(f"Modo Dry-Run (Simulación): {self.dry_run}")
-        print(f"Binance Testnet: {self.use_testnet}")
-
-        if not self.api_key or not self.api_secret:
-            print("AVISO: No se configuraron BINANCE_API_KEY / BINANCE_API_SECRET en el archivo .env.")
-            print("       Para visualizar tu saldo REAL de Binance, ingresa tus claves en el archivo .env")
+        logging.info("Inicializando Bot de Trading Binance...")
+        logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
+        logging.info(f"TP: +{self.tp_roi_pct}% ROI | SL: -{self.sl_roi_pct}% ROI | Dry-Run: {self.dry_run}")
 
         try:
             if self.api_key and self.api_secret:
@@ -149,31 +128,18 @@ class BinanceRsiDivergenceBot:
             
             if not self.dry_run and self.api_key and self.api_secret:
                 self._setup_futures_account()
-                print("[OK] Conexión autenticada exitosamente con Binance Futures API.")
+                logging.info("Conexión autenticada exitosamente con Binance Futures API.")
             else:
-                print("[OK] Conexión de mercado iniciada correctamente.")
+                logging.info("Conexión de mercado iniciada correctamente.")
 
             # Cerrar cualquier posición abierta previa al iniciar
             self.close_existing_positions()
 
         except Exception as e:
-            print(f"[!] Error conectando a Binance API: {e}")
+            logging.error(f"Error conectando a Binance API: {e}")
             if not self.dry_run:
-                print("[i] Cambiando automáticamente a modo DRY-RUN.")
+                logging.info("Cambiando automáticamente a modo DRY-RUN.")
                 self.dry_run = True
-
-        # Mostrar saldo real de la cuenta en pantalla
-        bal = self.get_account_balance()
-        print("=" * 65)
-        if bal['has_keys']:
-            print("💰 SALDO REAL EN CUENTA BINANCE FUTUROS:")
-            print(f"   • Balance Billetera: {bal['wallet_balance']:.2f} USDT")
-            print(f"   • Saldo Disponible:  {bal['available_balance']:.2f} USDT")
-            print(f"   • PnL No Realizado:  {bal['unrealized_pnl']:.2f} USDT")
-        else:
-            print("💰 SALDO REAL EN CUENTA BINANCE:")
-            print("   No disponible (Faltan API Keys en el archivo .env)")
-        print("=" * 65)
 
     def get_account_balance(self):
         """Obtiene el saldo disponible, total y PnL REAL de la cuenta Binance Futuros en USDT."""
@@ -248,26 +214,25 @@ class BinanceRsiDivergenceBot:
             # Configurar Modo Aislado
             try:
                 self.client.futures_change_margin_type(symbol=self.symbol, marginType='ISOLATED')
-                print(f"[OK] Margen cambiado a ISOLATED para {self.symbol}.")
+                logging.info(f"Margen cambiado a ISOLATED para {self.symbol}.")
             except BinanceAPIException as e:
-                # Código -4046: "No need to change margin type."
                 if e.code == -4046 or "No need to change" in str(e):
                     pass
                 else:
-                    print(f"[!] Nota sobre margen: {e.message}")
+                    logging.warning(f"Nota sobre margen: {e.message}")
 
             # Configurar Apalancamiento 10x
             self.client.futures_change_leverage(symbol=self.symbol, leverage=self.leverage)
-            print(f"[OK] Apalancamiento configurado a {self.leverage}x para {self.symbol}.")
+            logging.info(f"Apalancamiento configurado a {self.leverage}x para {self.symbol}.")
 
         except Exception as e:
-            print(f"[!] Error al configurar cuenta de futuros: {e}")
+            logging.error(f"Error al configurar cuenta de futuros: {e}")
 
     def close_existing_positions(self):
         """
         Cierra cualquier posición abierta previa al iniciar el bot y cancela órdenes pendientes.
         """
-        print("🔍 Verificando y cerrando posiciones abiertas al iniciar el bot...")
+        logging.info("Verificando y cerrando posiciones abiertas al iniciar el bot...")
         if self.dry_run:
             self.current_position = None
             self.entry_price = 0.0
@@ -275,11 +240,11 @@ class BinanceRsiDivergenceBot:
             self.entry_time = None
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
-            print("[OK] Modo Simulación (DRY-RUN): Posición inicial restablecida a SIN POSICIÓN.")
+            logging.info("Modo Simulación (DRY-RUN): Posición inicial restablecida a SIN POSICIÓN.")
             return
 
         if not self.client or not self.api_key or not self.api_secret:
-            print("[!] Sin API Keys configuradas. Omitiendo cierre de posiciones previas.")
+            logging.info("Sin API Keys configuradas. Omitiendo cierre de posiciones previas.")
             return
 
         try:
@@ -302,7 +267,7 @@ class BinanceRsiDivergenceBot:
                     side_to_close = 'SELL' if amt > 0 else 'BUY'
                     qty = self._format_quantity(abs(amt))
                     pos_type = 'LONG' if amt > 0 else 'SHORT'
-                    print(f"[⚠️ INICIO] Posición previa detectada en Binance: {pos_type} de {qty} {self.symbol}. Cerrando a MARKET...")
+                    logging.info(f"Posición previa detectada en Binance: {pos_type} de {qty} {self.symbol}. Cerrando a MARKET...")
                     
                     close_order = self.client.futures_create_order(
                         symbol=self.symbol,
@@ -311,11 +276,11 @@ class BinanceRsiDivergenceBot:
                         quantity=qty,
                         reduceOnly=True
                     )
-                    print(f"[OK] Posición {pos_type} previa cerrada exitosamente a MARKET. Order ID: {close_order.get('orderId')}")
+                    logging.info(f"Posición {pos_type} previa cerrada exitosamente a MARKET. Order ID: {close_order.get('orderId')}")
                     closed_any = True
 
             if not closed_any:
-                print(f"[OK] Sin posiciones abiertas previas para {self.symbol} en Binance Futuros.")
+                logging.info(f"Sin posiciones abiertas previas para {self.symbol} en Binance Futuros.")
 
             self.current_position = None
             self.entry_price = 0.0
@@ -325,7 +290,7 @@ class BinanceRsiDivergenceBot:
             self.min_pnl_pct = 0.0
 
         except Exception as e:
-            print(f"[!] Error cerrando posiciones abiertas al iniciar: {e}")
+            logging.error(f"Error cerrando posiciones abiertas al iniciar: {e}")
 
     def futures_create_algo_order(self, **params):
         """
@@ -526,20 +491,15 @@ class BinanceRsiDivergenceBot:
 
     def open_position(self, side, current_price):
         """Abre posición LONG o SHORT en Binance Futures con órdenes TP y SL."""
-        sys.stdout.write("\r\033[K")
-        self.last_lines_printed = 1
-        sys.stdout.flush()
-
         notional_val = self.margin_usdt * self.leverage
         raw_qty = notional_val / current_price
         qty = self._format_quantity(raw_qty)
 
         tp_price, sl_price = self.calculate_tp_sl(side, current_price)
-        side_colored = Fore.CYAN + side + Style.RESET_ALL
 
-        print(f"[🚀 SEÑAL ENCONTRADA] Entrada {side_colored} detectada en {current_price}")
-        print(f" -> Margen: {self.margin_usdt} USDT | Apalancamiento: {self.leverage}x | Posición Nocional: {notional_val} USDT | Cantidad: {qty} {self.symbol}")
-        print(f" -> Take Profit (+{self.tp_roi_pct}% ROI): {tp_price} | Stop Loss (-{self.sl_roi_pct}% ROI): {sl_price}")
+        logging.info(f"SEÑAL ENCONTRADA: Entrada {side} detectada en {current_price}")
+        logging.info(f"Margen: {self.margin_usdt} USDT | Apalancamiento: {self.leverage}x | Cantidad: {qty} {self.symbol}")
+        logging.info(f"Take Profit: {tp_price} | Stop Loss: {sl_price}")
 
         if self.dry_run:
             self.current_position = side
@@ -551,7 +511,7 @@ class BinanceRsiDivergenceBot:
             self.entry_time = datetime.now()
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
-            print(f"[SIMULACIÓN] Posición {side_colored} abierta exitosamente a {current_price}")
+            logging.info(f"[SIMULACIÓN] Posición {side} abierta exitosamente a {current_price}")
             return True
 
         # Ejecución Real en Binance Futures
@@ -595,7 +555,7 @@ class BinanceRsiDivergenceBot:
                     closePosition='true'
                 )
             except Exception as e:
-                print(f"[!] Error colocando Take Profit algo: {e}")
+                logging.error(f"Error colocando Take Profit algo: {e}")
 
             # 3. Orden de Stop Loss (STOP_MARKET via Algo API)
             try:
@@ -608,9 +568,9 @@ class BinanceRsiDivergenceBot:
                     closePosition='true'
                 )
             except Exception as e:
-                print(f"[!] Error colocando Stop Loss algo: {e}")
+                logging.error(f"Error colocando Stop Loss algo: {e}")
 
-            print(f"[OK] Orden MARKET ID: {market_id} | Take Profit: {tp_price} | Stop Loss: {sl_price}")
+            logging.info(f"Orden MARKET ID: {market_id} | Take Profit: {tp_price} | Stop Loss: {sl_price}")
 
             self.current_position = side
             self.entry_price = current_price
@@ -624,7 +584,7 @@ class BinanceRsiDivergenceBot:
             return True
 
         except Exception as e:
-            print(f"[!] Error abriendo posición en Binance: {e}")
+            logging.error(f"Error abriendo posición en Binance: {e}")
             return False
 
     def _record_trade_result(self, pnl):
@@ -654,51 +614,103 @@ class BinanceRsiDivergenceBot:
 
     @staticmethod
     def _fit_to_terminal(text, max_cols):
-        """Trunca la línea respetando secuencias ANSI de color para que no supere max_cols y no haga salto de línea."""
-        plain_text = re.sub(r'\033\[[0-9;]*m', '', text)
-        if len(plain_text) < max_cols:
+        """Trunca la línea en texto plano para que no supere max_cols en pantalla."""
+        if len(text) <= max_cols:
             return text
-
-        result = []
-        visible_count = 0
-        i = 0
-        n = len(text)
         max_vis = max(10, max_cols - 4)
-
-        while i < n and visible_count < max_vis:
-            if text[i] == '\033':
-                match = re.match(r'\033\[[0-9;]*m', text[i:])
-                if match:
-                    code = match.group(0)
-                    result.append(code)
-                    i += len(code)
-                    continue
-            result.append(text[i])
-            visible_count += 1
-            i += 1
-
-        result.append("..." + Style.RESET_ALL)
-        return "".join(result)
+        return text[:max_vis] + "..."
 
     def show_trade_stats(self):
-        """Muestra en una sola línea el resumen de estadísticas de operaciones, tiempo total de funcionamiento, dinero ganado/perdido y balance billetera."""
+        """Registra el resumen de estadísticas de operaciones en el log."""
+        uptime_hours = (time.time() - self.bot_start_time) / 3600.0
+        logging.info(
+            f"RESUMEN: Tiempo Total: {uptime_hours:.2f}h | "
+            f"Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | "
+            f"Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)"
+        )
+
+    def render_screen(self, current_price, current_vwap, current_rsi, oracle_val, sig_orc_str, rsi_signal, combined_signal, active_pos, entry, qty, pnl_pct, dur_mins, is_within_hours, schedule_reason):
+        """Limpia la pantalla y muestra la cabecera fija junto con la línea del estado actual (sin colores)."""
+        # 1. Saldo de cuenta
         if self.dry_run:
-            wallet_bal_str = f"{self.simulated_balance:.2f} USDT"
+            wallet_bal = self.simulated_balance
+            avail_bal = self.simulated_balance
+            unrealized = 0.0
+            has_keys = False
         else:
             bal = self.get_account_balance()
-            wallet_bal_str = f"{bal['wallet_balance']:.2f} USDT" if bal['has_keys'] else "N/A"
+            wallet_bal = bal['wallet_balance']
+            avail_bal = bal['available_balance']
+            unrealized = bal['unrealized_pnl']
+            has_keys = bal['has_keys']
 
+        # 2. Uptime
         uptime_hours = (time.time() - self.bot_start_time) / 3600.0
 
-        stats_line = (
-            f"{Fore.CYAN}📊 RESUMEN: "
-            f"Tiempo Total: {uptime_hours:.2f}h | "
-            f"Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | "
-            f"Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT) | "
-            f"Balance Billetera: {wallet_bal_str}{Style.RESET_ALL}"
+        # 3. Formato del estado actual
+        sig_rsi_str = rsi_signal if rsi_signal else "Sin Div"
+        sig_comb_str = combined_signal if combined_signal else "ESPERANDO"
+
+        if not is_within_hours:
+            horario_badge = f"[CERRADO: {schedule_reason}]"
+        else:
+            horario_badge = "[ABIERTO]"
+
+        if active_pos:
+            dur_str = f" (Duración: {dur_mins:.1f}m)"
+            if pnl_pct >= 0:
+                pnl_str = f"+{pnl_pct:.2f}%"
+            else:
+                pnl_str = f"{pnl_pct:.2f}%"
+            pos_str = f"{active_pos} @ {entry:.2f} ({pnl_str}){dur_str}"
+        else:
+            pos_str = "SIN POSICIÓN"
+
+        cols = shutil.get_terminal_size(fallback=(160, 24)).columns
+
+        lines = []
+        lines.append("=" * 65)
+        lines.append("   BOT DE TRADING BINANCE - DIVERGENCIA RSI + ORACLE + VWAP (15m)")
+        lines.append("=" * 65)
+        lines.append(f"Símbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
+        lines.append(f"Take Profit (TP): +{self.tp_roi_pct}% ROI | Stop Loss (SL): -{self.sl_roi_pct}% ROI")
+        if self.enable_schedule:
+            week_str = " (Lunes a Viernes)" if self.schedule_weekdays_only else ""
+            lines.append(f"Filtro Horario: {self.schedule_start_str} a {self.schedule_end_str} hs (Buenos Aires){week_str}")
+        else:
+            lines.append("Filtro Horario: DESACTIVADO")
+        lines.append(f"Modo Dry-Run (Simulación): {self.dry_run} | Testnet: {self.use_testnet}")
+        lines.append("-" * 65)
+        lines.append("SALDO EN CUENTA:")
+        if has_keys:
+            lines.append(f"   Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
+        elif self.dry_run:
+            lines.append(f"   Wallet (Simulado): {wallet_bal:.2f} USDT")
+        else:
+            lines.append("   No disponible (Faltan API Keys en .env)")
+        lines.append("-" * 65)
+        lines.append("RESUMEN DE OPERACIONES:")
+        lines.append(f"Tiempo Total: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
+        lines.append("=" * 65)
+        lines.append("ESTADO ACTUAL:")
+        
+        status_line = (
+            f"{self.symbol}: ${current_price:.2f} | "
+            f"VWAP: ${current_vwap:.2f} | "
+            f"RSI: {current_rsi:.1f} | "
+            f"Oracle: {oracle_val:.1f} ({sig_orc_str}) | "
+            f"Div: {sig_rsi_str} | "
+            f"Señal: {sig_comb_str} | "
+            f"Horario: {horario_badge} | "
+            f"Estado: {pos_str}"
         )
-        print(stats_line)
-        print("=" * 65)
+        status_line = self._fit_to_terminal(status_line, cols)
+        lines.append(status_line)
+        lines.append("=" * 65)
+
+        output_buffer = "\033[H\033[J" + "\n".join(lines) + "\n"
+        sys.stdout.write(output_buffer)
+        sys.stdout.flush()
 
     def _get_last_realized_pnl(self):
         """Obtiene el PnL realizado de la posición recién cerrada desde Binance API."""
@@ -747,10 +759,7 @@ class BinanceRsiDivergenceBot:
 
         if hit_tp or hit_sl:
             exit_time = datetime.now()
-            entry_str = self.entry_time.strftime('%H:%M:%S') if self.entry_time else "N/A"
-            exit_str = exit_time.strftime('%H:%M:%S')
             dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-            pos_colored = Fore.CYAN + pos + Style.RESET_ALL
 
             if self.entry_price > 0:
                 if pos == 'LONG':
@@ -762,19 +771,11 @@ class BinanceRsiDivergenceBot:
                 if exit_pnl_pct < self.min_pnl_pct:
                     self.min_pnl_pct = exit_pnl_pct
 
-            max_info_str = f"{Fore.CYAN} -> % Ganancia Máximo: +{self.max_pnl_pct:.2f}% | % Pérdida Máximo: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m{Style.RESET_ALL}"
-
             if hit_tp:
                 pnl = self.margin_usdt * (self.tp_roi_pct / 100.0)
                 self.simulated_balance += pnl
                 self._record_trade_result(pnl)
-                sys.stdout.write("\r\033[K")
-                self.last_lines_printed = 1
-                sys.stdout.flush()
-                pnl_pct_str = f"{Fore.GREEN}% Ganancia No Realizada: +{self.tp_roi_pct:.2f}%{Style.RESET_ALL}"
-                print(f"[🎯 TAKE PROFIT ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
-                print(f" -> {pnl_pct_str}")
-                print(max_info_str)
+                logging.info(f"TAKE PROFIT ALCANZADO: Posición {pos} cerrada a {current_price}. PnL: +{self.tp_roi_pct:.2f}% | Max Gain: +{self.max_pnl_pct:.2f}% | Max Loss: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m")
                 self._save_trade_to_file("tp", self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
                 self.current_position = None
                 self.entry_time = None
@@ -785,13 +786,7 @@ class BinanceRsiDivergenceBot:
                 pnl = -self.margin_usdt * (self.sl_roi_pct / 100.0)
                 self.simulated_balance += pnl
                 self._record_trade_result(pnl)
-                sys.stdout.write("\r\033[K")
-                self.last_lines_printed = 1
-                sys.stdout.flush()
-                pnl_pct_str = f"{Fore.RED}% Pérdida No Realizada: -{self.sl_roi_pct:.2f}%{Style.RESET_ALL}"
-                print(f"[🛑 STOP LOSS ALCANZADO] Posición {pos_colored} cerrada a {current_price}.")
-                print(f" -> {pnl_pct_str}")
-                print(max_info_str)
+                logging.info(f"STOP LOSS ALCANZADO: Posición {pos} cerrada a {current_price}. PnL: -{self.sl_roi_pct:.2f}% | Max Gain: +{self.max_pnl_pct:.2f}% | Max Loss: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m")
                 self._save_trade_to_file("sl", self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
                 self.current_position = None
                 self.entry_time = None
@@ -835,7 +830,7 @@ class BinanceRsiDivergenceBot:
 
     def run(self):
         """Bucle principal de ejecución del bot."""
-        print(f"[Iniciando Monitoreo] Analizando {self.symbol} en velas de {self.timeframe}...")
+        logging.info(f"Iniciando monitoreo de {self.symbol} ({self.timeframe})...")
         
         while True:
             try:
@@ -873,15 +868,9 @@ class BinanceRsiDivergenceBot:
                 elif not self.dry_run and active_pos is None and self.current_position:
                     # En modo real, la posición se cerró en Binance por TP o SL
                     exit_time = datetime.now()
-                    entry_str = self.entry_time.strftime('%H:%M:%S') if self.entry_time else "N/A"
-                    exit_str = exit_time.strftime('%H:%M:%S')
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-                    pos_colored = Fore.CYAN + self.current_position + Style.RESET_ALL
 
-                    sys.stdout.write("\r\033[K")
-                    self.last_lines_printed = 1
-                    sys.stdout.flush()
-                    print(f"[ℹ] Posición {pos_colored} cerrada en Binance. Cancelando órdenes pendientes huérfanas...")
+                    logging.info(f"Posición {self.current_position} cerrada en Binance. Cancelando órdenes pendientes huérfanas...")
                     try:
                         self.client.futures_cancel_all_open_orders(symbol=self.symbol)
                     except Exception as e:
@@ -905,15 +894,7 @@ class BinanceRsiDivergenceBot:
                     if pnl_pct < self.min_pnl_pct:
                         self.min_pnl_pct = pnl_pct
 
-                    if pnl >= 0:
-                        pnl_pct_str = f"{Fore.GREEN}% Ganancia No Realizada: +{pnl_pct:.2f}%{Style.RESET_ALL}"
-                    else:
-                        pnl_pct_str = f"{Fore.RED}% Pérdida No Realizada: {pnl_pct:.2f}%{Style.RESET_ALL}"
-
-                    max_info_str = f"{Fore.CYAN} -> % Ganancia Máximo: +{self.max_pnl_pct:.2f}% | % Pérdida Máximo: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m{Style.RESET_ALL}"
-
-                    print(f" -> {pnl_pct_str}")
-                    print(max_info_str)
+                    logging.info(f"Operación cerrada. PnL: {pnl_pct:.2f}% | Max Gain: +{self.max_pnl_pct:.2f}% | Max Loss: {self.min_pnl_pct:.2f}% | Duración: {dur_mins:.1f}m")
 
                     target_file = "tp" if pnl >= 0 else "sl"
                     self._save_trade_to_file(target_file, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
@@ -925,78 +906,47 @@ class BinanceRsiDivergenceBot:
                     self.min_pnl_pct = 0.0
                     self.show_trade_stats()
 
-                # Formato de consola de estado en pantalla (SIEMPRE 1 SOLA LÍNEA)
+                # Formato de consola de estado en pantalla (Cabecera fija + Estado actual)
+                pnl_pct = 0.0
+                dur_mins = 0.0
                 if active_pos:
                     dur_mins = (datetime.now() - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-                    dur_str = f" ({Fore.CYAN}Duración: {dur_mins:.1f}m{Style.RESET_ALL})"
                     if entry > 0:
                         if active_pos == 'LONG':
                             pnl_pct = ((current_price - entry) / entry) * self.leverage * 100.0
                         else:  # SHORT
                             pnl_pct = ((entry - current_price) / entry) * self.leverage * 100.0
-                    else:
-                        pnl_pct = 0.0
 
-                    # Registrar máximo beneficio y máxima pérdida detectados durante la posición
                     if pnl_pct > self.max_pnl_pct:
                         self.max_pnl_pct = pnl_pct
                     if pnl_pct < self.min_pnl_pct:
                         self.min_pnl_pct = pnl_pct
 
-                    if pnl_pct >= 0:
-                        pnl_str = f"{Fore.GREEN}+{pnl_pct:.2f}%{Style.RESET_ALL}"
-                    else:
-                        pnl_str = f"{Fore.RED}{pnl_pct:.2f}%{Style.RESET_ALL}"
-
-                    pos_colored = Fore.CYAN + active_pos + Style.RESET_ALL
-                    pos_str = f"{pos_colored} @ {entry:.2f} ({pnl_str}){dur_str}"
-                else:
-                    pos_str = "SIN POSICIÓN"
-
-                sig_rsi_str = rsi_signal if rsi_signal else "Sin Div"
                 sig_orc_str = "BULL" if oracle_signal == 'ORACLE_BULL' else ("BEAR" if oracle_signal == 'ORACLE_BEAR' else "NEUT")
-                
-                if combined_signal in ('LONG', 'SHORT'):
-                    sig_comb_str = Fore.CYAN + combined_signal + Style.RESET_ALL
-                else:
-                    sig_comb_str = "ESPERANDO"
-
-                estado_label = "Estado: "
-
-                cols = shutil.get_terminal_size(fallback=(160, 24)).columns
 
                 # Verificar horario de operaciones (Bolsa EE.UU. 10:30 a 17:00 Buenos Aires)
                 is_within_hours, schedule_reason = self.is_within_trading_hours()
 
-                if not is_within_hours:
-                    horario_badge = f"{Fore.YELLOW}[CERRADO: {schedule_reason}]{Style.RESET_ALL}"
-                else:
-                    horario_badge = f"{Fore.GREEN}[ABIERTO]{Style.RESET_ALL}"
-
-                line_str = (
-                    f"{self.symbol}: ${current_price:.2f} | "
-                    f"VWAP: ${current_vwap:.2f} | "
-                    f"RSI: {current_rsi:.1f} | "
-                    f"Oracle: {oracle_val:.1f} ({sig_orc_str}) | "
-                    f"Div: {sig_rsi_str} | "
-                    f"Señal: {sig_comb_str} | "
-                    f"Horario: {horario_badge} | "
-                    f"{estado_label}{pos_str}"
+                self.render_screen(
+                    current_price=current_price,
+                    current_vwap=current_vwap,
+                    current_rsi=current_rsi,
+                    oracle_val=oracle_val,
+                    sig_orc_str=sig_orc_str,
+                    rsi_signal=rsi_signal,
+                    combined_signal=combined_signal,
+                    active_pos=active_pos,
+                    entry=entry,
+                    qty=qty,
+                    pnl_pct=pnl_pct,
+                    dur_mins=dur_mins,
+                    is_within_hours=is_within_hours,
+                    schedule_reason=schedule_reason
                 )
-
-                line_str = self._fit_to_terminal(line_str, cols)
-
-                sys.stdout.write(f"\r\033[K{line_str}")
-                self.last_lines_printed = 1
-                sys.stdout.flush()
 
                 # 6. Lógica de entrada si no hay posición activa
                 if active_pos is None and combined_signal:
-                    if self.enable_schedule and not is_within_hours:
-                        pass
-                    else:
-                        sys.stdout.write("\r\033[K")
-                        sys.stdout.flush()
+                    if not (self.enable_schedule and not is_within_hours):
                         self.open_position(combined_signal, current_price)
 
                 # Esperar 10 segundos antes de la siguiente verificación
