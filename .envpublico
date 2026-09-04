@@ -3,32 +3,32 @@ SYMBOL=BTCUSDT
 MARGIN_USDT=5.0
 LEVERAGE=10
 
-# Estrategia a Ejecutar (1 = Divergencia RSI+Oracle+VWAP, 2 = Apertura Market Open, ALL = Ambas)
-ACTIVE_STRATEGY=ALL
+# Estrategia: Apertura (1m / 5m + Trend + Fibonacci S1/S3 y R1/R3)
+TIMEFRAME_OPEN=1m
+TIMEFRAME_TREND=5m
 
-# Porcentajes de Take Profit y Stop Loss sobre el capital invertido (ROI 3%)
-TP_ROI_PCT=3.0
-SL_ROI_PCT=3.0
+# Horarios de Apertura de Bolsa (Horario Buenos Aires UTC-3)
+# 1) Euronext: 04:00 hs
+# 2) Tokio: 21:00 hs
+# 3) New York: 10:30 hs
+OPENING_TIMES=04:00,21:00,10:30
 
-# Configuración Estrategia 1 (1 min: Divergencia RSI + Oracle + VWAP)
-TIMEFRAME_STRAT1=1m
-RSI_PERIOD=14
-PIVOT_LOOKBACK_LEFT=5
-PIVOT_LOOKBACK_RIGHT=2
-STRAT1_SCHEDULE_START=10:30
-STRAT1_SCHEDULE_END=17:00
+# Horarios de Operación de Bolsas (Buenos Aires UTC-3)
+EURONEXT_SCHEDULE_START=04:00
+EURONEXT_SCHEDULE_END=12:30
 
-# Configuración Estrategia 2 (Apertura 10:30 hs Buenos Aires, Velas 1m y 5m)
-OPENING_TIME=10:30
-TIMEFRAME_STRAT2_OPEN=1m
-TIMEFRAME_STRAT2_TREND=5m
-STRAT2_SCHEDULE_START=10:00
-STRAT2_SCHEDULE_END=18:00
+TOKYO_SCHEDULE_START=21:00
+TOKYO_SCHEDULE_END=03:00
+
+NY_SCHEDULE_START=10:30
+NY_SCHEDULE_END=17:00
 
 # Modos de Ejecución
-DRY_RUN=False
+DRY_RUN=True
 USE_TESTNET=False
 
-# Configuración de Horario de Operaciones General
+# Configuración de Filtro Horario
 ENABLE_SCHEDULE_FILTER=True
 SCHEDULE_WEEKDAYS_ONLY=True
+
+
