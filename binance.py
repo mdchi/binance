@@ -2,19 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia 1: Confluencia Divergencias RSI + Oscilador Oracle + VWAP (Velas de 3 Minutos)
+Estrategia 1: Confluencia Divergencias RSI + Oscilador Oracle + VWAP (Velas de 1 Minuto)
 Estrategia 2: Apertura Market Open 10:30 hs ART (Velas 1m / 5m + Tendencia + Extensiones y Retrocesos Fibonacci)
 
 Configuración:
 - Modo: Aislado (Isolated)
 - Apalancamiento: 10x
-- Monto por Operación: 50 USDT
+- Monto por Operación: 5 USDT
 - Take Profit (TP): +3% ROI sobre el monto de la operación
 - Stop Loss (SL): -3% ROI sobre el monto de la operación
-- Horario de Operaciones: 10:30 a 17:00 hs (Horario Buenos Aires)
+- Horario Estrategia 1: 10:30 a 17:00 hs (Horario Buenos Aires)
+- Horario Estrategia 2: 10:00 a 18:00 hs (Horario Buenos Aires, Días Hábiles)
 - Monitoreo en Consola: Monocromo sin colores, cabecera fija, actualización de estado actual.
 - Registro de Trades: tp.txt y sl.txt (estrategia, hora, % ganancia máximo, % pérdida máximo, duración)
-- Variables de Entorno: envprivado (API Keys) y .env (resto de parámetros)
+- Variables de Entorno: .envprivado (API Keys) y .envpublico (resto de parámetros)
 """
 
 import os
@@ -22,7 +23,6 @@ import sys
 import time
 import math
 import logging
-import shutil
 from datetime import datetime, timezone, timedelta, time as dtime
 import pandas as pd
 import numpy as np
@@ -35,7 +35,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# 2. Configuración de Logging (a bot.log para mantener la pantalla limpia)
+# 2. Configuración de Logging (a bot.log para mantener la pantalla de consola limpia)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -53,25 +53,26 @@ for env_pub in [".envpublico", "envpublico", ".env", "env"]:
     if os.path.exists(env_pub):
         load_dotenv(env_pub)
 
-
-
 # 4. Importar biblioteca python-binance evitando sombreado de módulo local
-current_dir = sys.path.pop(0) if sys.path and sys.path[0] in ('', os.getcwd(), os.path.dirname(__file__)) else None
+sys_path_bak = list(sys.path)
+cwd = os.getcwd()
+file_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else cwd
+sys.path = [p for p in sys.path if p not in ('', cwd, file_dir)]
 try:
     from binance.client import Client
     from binance.exceptions import BinanceAPIException
 finally:
-    if current_dir is not None:
-        sys.path.insert(0, current_dir)
+    sys.path = sys_path_bak
+
 
 
 class BinanceMultiStrategyBot:
     def __init__(self):
-        # Cargar API Keys y Configuración
+        # Cargar API Keys y Configuración desde variables de entorno
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
         self.api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "50.0"))
+        self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
         
         # Selección de Estrategias: '1', '2', 'ALL'
@@ -81,8 +82,8 @@ class BinanceMultiStrategyBot:
         self.tp_roi_pct = float(os.getenv("TP_ROI_PCT", "3.0"))
         self.sl_roi_pct = float(os.getenv("SL_ROI_PCT", "3.0"))
 
-        # Configuración Estrategia 1 (3m)
-        self.timeframe_strat1 = os.getenv("TIMEFRAME_STRAT1", "3m")
+        # Configuración Estrategia 1 (Velas 1m)
+        self.timeframe_strat1 = os.getenv("TIMEFRAME_STRAT1", "1m")
         self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
         self.pivot_left = int(os.getenv("PIVOT_LOOKBACK_LEFT", "5"))
         self.pivot_right = int(os.getenv("PIVOT_LOOKBACK_RIGHT", "2"))
@@ -96,10 +97,8 @@ class BinanceMultiStrategyBot:
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Configuración Horario de Operaciones (10:30 - 17:00 hs Buenos Aires)
+        # Configuración de Filtros Horarios
         self.enable_schedule = os.getenv("ENABLE_SCHEDULE_FILTER", "True").lower() in ("true", "1", "yes")
-        self.schedule_start_str = os.getenv("SCHEDULE_START", "10:30").strip()
-        self.schedule_end_str = os.getenv("SCHEDULE_END", "17:00").strip()
         self.schedule_weekdays_only = os.getenv("SCHEDULE_WEEKDAYS_ONLY", "True").lower() in ("true", "1", "yes")
 
         # Cliente Binance y Reglas de Mercado
@@ -112,7 +111,7 @@ class BinanceMultiStrategyBot:
 
         # Estado de posición activa en bot
         self.current_position = None  # None, 'LONG', 'SHORT'
-        self.position_strategy = None  # 'Estrategia 1: Divergencia RSI+Oracle+VWAP' o 'Estrategia 2: Apertura'
+        self.position_strategy = None  # Nombre de estrategia que abrió la posición
         self.entry_price = 0.0
         self.position_qty = 0.0
         self.tp_price = 0.0
@@ -154,9 +153,9 @@ class BinanceMultiStrategyBot:
                 self._setup_futures_account()
                 logging.info("Conexión autenticada exitosamente a Binance Futures API.")
             else:
-                logging.info("Conexión pública de mercado lista.")
+                logging.info("Conexión en modo lectura o simulación.")
 
-            # REQUERIMIENTO DETALLES 1: Cerrar posiciones abiertas al iniciar bot
+            # DETALLES 1: Cerrar posiciones abiertas al iniciar bot
             self.close_existing_positions()
 
         except Exception as e:
@@ -182,7 +181,7 @@ class BinanceMultiStrategyBot:
                     break
             logging.info(f"Filtros {self.symbol} -> TickSize: {self.tick_size}, StepSize: {self.step_size}")
         except Exception as e:
-            logging.warning(f"No se pudieron obtener precisiones dinámicas ({e}). Usando defaults.")
+            logging.warning(f"No se pudieron obtener precisiones dinámicas ({e}). Usando valores por defecto.")
 
     @staticmethod
     def _precision_from_step(step_str):
@@ -277,7 +276,7 @@ class BinanceMultiStrategyBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
-    def fetch_klines(self, timeframe='3m', limit=200):
+    def fetch_klines(self, timeframe='1m', limit=200):
         """Obtiene klines OHLCV desde Binance Futures."""
         try:
             klines = self.client.futures_klines(symbol=self.symbol, interval=timeframe, limit=limit)
@@ -311,7 +310,7 @@ class BinanceMultiStrategyBot:
         return rsi
 
     def detect_rsi_divergences(self, df):
-        """Detecta divergencias de RSI alcistas y bajistas."""
+        """Detecta divergencias de RSI alcistas y bajistas en velas de 1 min."""
         df = df.copy()
         df['rsi'] = self.calculate_rsi(df)
         n = len(df)
@@ -333,14 +332,14 @@ class BinanceMultiStrategyBot:
 
         signal = "Sin Div"
 
-        # Bullish Divergence (LONG)
+        # Divergencia Alcista (LONG)
         if len(pivot_lows) >= 2:
             p1, p2 = pivot_lows[-2], pivot_lows[-1]
             if (end_idx - p2['index']) <= (self.pivot_right + 5):
                 if p2['price'] <= p1['price'] and p2['rsi'] > p1['rsi']:
                     signal = "BULL_DIV"
 
-        # Bearish Divergence (SHORT)
+        # Divergencia Bajista (SHORT)
         if len(pivot_highs) >= 2:
             p1, p2 = pivot_highs[-2], pivot_highs[-1]
             if (end_idx - p2['index']) <= (self.pivot_right + 5):
@@ -380,7 +379,7 @@ class BinanceMultiStrategyBot:
         return status, last_oracle, last_signal
 
     def calculate_vwap(self, df):
-        """Calcula el VWAP intradía acumulado."""
+        """Calcula el VWAP intradía acumulado para velas de 1 min."""
         df = df.copy()
         typical_price = (df['high'] + df['low'] + df['close']) / 3.0
         tp_volume = typical_price * df['volume']
@@ -404,7 +403,7 @@ class BinanceMultiStrategyBot:
         ba_tz = timezone(timedelta(hours=-3))
         now_ba = datetime.now(ba_tz)
 
-        # 1. Obtener klines de 1 min para buscar la vela de apertura de 10:30 hs
+        # 1. Obtener klines de 1m y 5m
         df_1m = self.fetch_klines(timeframe='1m', limit=300)
         df_5m = self.fetch_klines(timeframe='5m', limit=100)
 
@@ -631,7 +630,7 @@ class BinanceMultiStrategyBot:
 
     def _save_trade_to_file(self, strategy_name, exit_type, max_gain_pct, max_loss_pct, dur_mins, exit_time=None):
         """
-        DETALLES 2: Guardar en tp.txt o sl.txt con los datos:
+        DETALLES 2: Guardar en tp.txt o sl.txt con los datos exactos:
         estrategia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion
         """
         filename = "tp.txt" if exit_type.lower() == "tp" else "sl.txt"
@@ -642,7 +641,7 @@ class BinanceMultiStrategyBot:
         strat_label = strategy_name if strategy_name else "Estrategia General"
         
         try:
-            line = f"{strat_label}, {hora_str}, % Ganancia Máximo: +{max_gain_pct:.2f}%, % Pérdida Máximo: {max_loss_pct:.2f}%, Duración: {dur_mins:.1f}m\n"
+            line = f"{strat_label}, {hora_str}, Max Gain: +{max_gain_pct:.2f}%, Max Loss: {max_loss_pct:.2f}%, Duracion: {dur_mins:.1f}m\n"
             with open(filename, "a", encoding="utf-8") as f:
                 f.write(line)
             logging.info(f"Registro guardado en {filename}: {line.strip()}")
@@ -682,8 +681,12 @@ class BinanceMultiStrategyBot:
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
 
-    def is_within_trading_hours(self):
-        """Verifica si la hora actual en Buenos Aires está dentro de 10:30 a 17:00 hs."""
+    def is_within_trading_hours(self, strat_num=1):
+        """
+        Verifica si la hora actual en Buenos Aires está dentro de los horarios permitidos:
+        - Estrategia 1: 10:30 a 17:00 hr (Buenos Aires)
+        - Estrategia 2: 10:00 a 18:00 hr (Buenos Aires, Días Hábiles)
+        """
         if not self.enable_schedule:
             return True, "Filtro desactivado"
 
@@ -693,26 +696,34 @@ class BinanceMultiStrategyBot:
         if self.schedule_weekdays_only and now_ba.weekday() >= 5:
             return False, "Fin de semana"
 
+        if strat_num == 1:
+            start_str = os.getenv("STRAT1_SCHEDULE_START", "10:30").strip()
+            end_str = os.getenv("STRAT1_SCHEDULE_END", "17:00").strip()
+        else:
+            start_str = os.getenv("STRAT2_SCHEDULE_START", "10:00").strip()
+            end_str = os.getenv("STRAT2_SCHEDULE_END", "18:00").strip()
+
         try:
-            sh, sm = map(int, self.schedule_start_str.split(':'))
-            eh, em = map(int, self.schedule_end_str.split(':'))
+            sh, sm = map(int, start_str.split(':'))
+            eh, em = map(int, end_str.split(':'))
             start_time = dtime(sh, sm)
             end_time = dtime(eh, em)
         except Exception:
-            return True, "Formato horario inválido"
+            return True, "Formato invalido"
 
         if start_time <= now_ba.time() < end_time:
-            return True, f"Horario Bolsa ({self.schedule_start_str}-{self.schedule_end_str} ART)"
+            return True, f"ABIERTO ({start_str}-{end_str} ART)"
         else:
-            return False, f"Fuera de Horario ({self.schedule_start_str}-{self.schedule_end_str} ART)"
+            return False, f"CERRADO ({start_str}-{end_str} ART)"
 
-    def render_screen(self, current_price, s1_data, s2_data, active_pos, entry, qty, pnl_pct, dur_mins, is_within_hours, schedule_reason):
+    def render_screen(self, current_price, s1_data, s2_data, active_pos, entry, qty, pnl_pct, dur_mins, s1_hours_ok, s1_hours_reason, s2_hours_ok, s2_hours_reason):
         """
         DETALLES 3:
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla unicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla.
         - Borrar pantalla antes de actualizar la visualizacion de datos.
+        - Resumen de operacion individual para cada estrategia.
         """
         # 1. Borrar pantalla de consola antes de actualizar
         os.system('cls' if os.name == 'nt' else 'clear')
@@ -736,67 +747,65 @@ class BinanceMultiStrategyBot:
             wallet_bal, avail_bal, unrealized, has_keys = 0.0, 0.0, 0.0, False
 
         uptime_hours = (time.time() - self.bot_start_time) / 3600.0
-        horario_badge = "[ABIERTO]" if is_within_hours else f"[CERRADO: {schedule_reason}]"
+
+        pos_s1_str = "SIN POSICION"
+        pos_s2_str = "SIN POSICION"
 
         if active_pos:
-            dur_str = f" (Duración: {dur_mins:.1f}m)"
+            dur_str = f" ({dur_mins:.1f}m)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
-            pos_str = f"{active_pos} @ {entry:.2f} ({pnl_sign}{pnl_pct:.2f}%){dur_str} [{self.position_strategy}]"
-        else:
-            pos_str = "SIN POSICIÓN"
+            pos_info = f"{active_pos} @ ${entry:.2f} [{pnl_sign}{pnl_pct:.2f}%]{dur_str}"
+            if self.position_strategy and "Estrategia 1" in self.position_strategy:
+                pos_s1_str = pos_info
+            elif self.position_strategy and "Estrategia 2" in self.position_strategy:
+                pos_s2_str = pos_info
 
-        # Construcción de la pantalla fija (Sin Colores ANSI)
+        # Cabecera siempre visible (Monocromo sin colores ANSI)
         lines = []
-        lines.append("=" * 70)
-        lines.append("   BOT DE TRADING AUTOMATICO BINANCE - MONITOREO DE ESTRATEGIAS")
-        lines.append("=" * 70)
-        lines.append(f"Símbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
-        lines.append(f"Take Profit: +{self.tp_roi_pct}% ROI | Stop Loss: -{self.sl_roi_pct}% ROI")
-        lines.append(f"Filtro Horario: {self.schedule_start_str} a {self.schedule_end_str} hs (Buenos Aires)")
-        lines.append(f"Modo Dry-Run (Simulación): {self.dry_run} | Testnet: {self.use_testnet}")
-        lines.append("-" * 70)
-        lines.append("SALDO EN CUENTA:")
+        lines.append("======================================================================")
+        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTADO ACTUAL")
+        lines.append("======================================================================")
+        lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
+        lines.append(f"Take Profit: +{self.tp_roi_pct}% ROI | Stop Loss: -{self.sl_roi_pct}% ROI | Dry-Run: {self.dry_run}")
+        lines.append("----------------------------------------------------------------------")
         if has_keys:
-            lines.append(f"   Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
+            lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
         elif self.dry_run:
-            lines.append(f"   Wallet (Simulado): {wallet_bal:.2f} USDT")
+            lines.append(f"Saldo Wallet (Simulado): {wallet_bal:.2f} USDT")
         else:
-            lines.append("   No disponible (Faltan API Keys en envprivado)")
-        lines.append("-" * 70)
-        lines.append("RESUMEN DE OPERACIONES:")
-        lines.append(f"Tiempo Total: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
-        lines.append("=" * 70)
-        lines.append("ESTADO ACTUAL:")
+            lines.append("Saldo Wallet: N/A (Sin claves de API en envprivado)")
+        lines.append(f"Resumen General: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
+        lines.append("======================================================================")
 
-        # Formato Estado Actual Estrategia 1 (Punto 9 Estrategia 1):
+        # Formato Estado Actual Estrategia 1 (5 líneas exactas según consigna):
         # 1: nombre de estrategia
         # 2: precio, rsi, oracle y vwap
         # 3: divergencia rsi, señal confluencia
         # 4: horario
         # 5: posicion
         if self.active_strategy_cfg in ("1", "ALL"):
-            lines.append("Estrategia 1: Divergencia RSI + Oracle + VWAP (3m)")
+            lines.append("Estrategia 1: Divergencia RSI + Oracle + VWAP")
             lines.append(f"Precio: ${current_price:.2f} | RSI: {s1_data['rsi']:.1f} | Oracle: {s1_data['oracle_val']:.1f} ({s1_data['oracle_sig']}) | VWAP: ${s1_data['vwap']:.2f}")
-            lines.append(f"Divergencia RSI: {s1_data['rsi_div']} | Señal Confluencia: {s1_data['signal'] if s1_data['signal'] else 'ESPERANDO'}")
-            lines.append(f"Horario: {horario_badge}")
-            lines.append(f"Posición: {pos_str if self.position_strategy == 'Estrategia 1: Divergencia RSI + Oracle + VWAP (3m)' else 'SIN POSICIÓN'}")
-            lines.append("-" * 70)
+            lines.append(f"Divergencia RSI: {s1_data['rsi_div']} | Senal Confluencia: {s1_data['signal'] if s1_data['signal'] else 'ESPERANDO'}")
+            lines.append(f"Horario: 10:30 a 17:00 hs ART [{s1_hours_reason}]")
+            lines.append(f"Posicion: {pos_s1_str}")
+            lines.append("----------------------------------------------------------------------")
 
-        # Formato Estado Actual Estrategia 2 (Punto 8 Estrategia 2):
+        # Formato Estado Actual Estrategia 2 (4 líneas exactas según consigna):
         # 1: nombre de estrategia
         # 2: precio, vela apertura
         # 3: horario
         # 4: posicion
         if self.active_strategy_cfg in ("2", "ALL"):
-            lines.append("Estrategia 2: Apertura Market Open (1m / 5m)")
+            lines.append("Estrategia 2: Apertura Market Open")
             lines.append(f"Precio: ${current_price:.2f} | Vela Apertura: {s2_data['vela_apertura_str']}")
-            lines.append(f"Horario: {horario_badge}")
-            lines.append(f"Posición: {pos_str if self.position_strategy == 'Estrategia 2: Apertura Market Open' else 'SIN POSICIÓN'}")
-            lines.append("-" * 70)
+            lines.append(f"Horario: 10:00 a 18:00 hs ART [{s2_hours_reason}]")
+            lines.append(f"Posicion: {pos_s2_str}")
+            lines.append("----------------------------------------------------------------------")
 
-        lines.append("=" * 70)
+        lines.append("======================================================================")
 
-        sys.stdout.write("\033[H\033[J" + "\n".join(lines) + "\n")
+        sys.stdout.write("\n".join(lines) + "\n")
         sys.stdout.flush()
 
     def run(self):
@@ -805,19 +814,19 @@ class BinanceMultiStrategyBot:
 
         while True:
             try:
-                # 1. Datos para Estrategia 1 (3m klines)
-                df_3m = self.fetch_klines(timeframe=self.timeframe_strat1, limit=300)
-                if df_3m is None or len(df_3m) == 0:
+                # 1. Datos para Estrategia 1 (1m klines)
+                df_1m = self.fetch_klines(timeframe=self.timeframe_strat1, limit=300)
+                if df_1m is None or len(df_1m) == 0:
                     time.sleep(10)
                     continue
 
-                current_price = df_3m['close'].iloc[-1]
+                current_price = df_1m['close'].iloc[-1]
 
-                # Análisis Estrategia 1
-                rsi_div, df_rsi = self.detect_rsi_divergences(df_3m)
+                # Análisis Estrategia 1 (1m)
+                rsi_div, df_rsi = self.detect_rsi_divergences(df_1m)
                 current_rsi = df_rsi['rsi'].iloc[-1] if 'rsi' in df_rsi else 50.0
-                oracle_status, oracle_val, _ = self.calculate_oracle_oscillator(df_3m)
-                vwap_series = self.calculate_vwap(df_3m)
+                oracle_status, oracle_val, _ = self.calculate_oracle_oscillator(df_1m)
+                vwap_series = self.calculate_vwap(df_1m)
                 current_vwap = vwap_series.iloc[-1] if len(vwap_series) > 0 and not pd.isna(vwap_series.iloc[-1]) else current_price
 
                 sig_oracle_str = "BULL" if oracle_status == 'ORACLE_BULL' else ("BEAR" if oracle_status == 'ORACLE_BEAR' else "NEUT")
@@ -882,7 +891,8 @@ class BinanceMultiStrategyBot:
                     if pnl_pct < self.min_pnl_pct:
                         self.min_pnl_pct = pnl_pct
 
-                is_within_hours, schedule_reason = self.is_within_trading_hours()
+                s1_hours_ok, s1_hours_reason = self.is_within_trading_hours(strat_num=1)
+                s2_hours_ok, s2_hours_reason = self.is_within_trading_hours(strat_num=2)
 
                 # Renderizar pantalla monocroma con cabecera y estado actual
                 self.render_screen(
@@ -894,15 +904,17 @@ class BinanceMultiStrategyBot:
                     qty=qty,
                     pnl_pct=pnl_pct,
                     dur_mins=dur_mins,
-                    is_within_hours=is_within_hours,
-                    schedule_reason=schedule_reason
+                    s1_hours_ok=s1_hours_ok,
+                    s1_hours_reason=s1_hours_reason,
+                    s2_hours_ok=s2_hours_ok,
+                    s2_hours_reason=s2_hours_reason
                 )
 
                 # 4. Abrir Posición si se cumplen condiciones y no hay posición activa
-                if active_pos is None and is_within_hours:
-                    if self.active_strategy_cfg in ("1", "ALL") and s1_signal:
-                        self.open_position("Estrategia 1: Divergencia RSI + Oracle + VWAP (3m)", s1_signal, current_price)
-                    elif self.active_strategy_cfg in ("2", "ALL") and s2_data['signal']:
+                if active_pos is None:
+                    if self.active_strategy_cfg in ("1", "ALL") and s1_hours_ok and s1_signal:
+                        self.open_position("Estrategia 1: Divergencia RSI + Oracle + VWAP", s1_signal, current_price)
+                    elif self.active_strategy_cfg in ("2", "ALL") and s2_hours_ok and s2_data['signal']:
                         self.open_position("Estrategia 2: Apertura Market Open", s2_data['signal'], current_price)
 
                 time.sleep(10)
