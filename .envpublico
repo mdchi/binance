@@ -24,7 +24,7 @@ NY_SCHEDULE_START=10:30
 NY_SCHEDULE_END=17:00
 
 # Modos de Ejecución
-DRY_RUN=True
+DRY_RUN=False
 USE_TESTNET=False
 
 # Configuración de Filtro Horario

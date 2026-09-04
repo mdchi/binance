@@ -57,16 +57,21 @@ for env_pub in [".envpublico", "envpublico", ".env", "env"]:
     if os.path.exists(env_pub):
         load_dotenv(env_pub)
 
-# 4. Importar biblioteca python-binance evitando sombreado local
+# 4. Importar biblioteca python-binance evitando sombreado local por el archivo binance.py
+import importlib
+local_bin_module = sys.modules.pop('binance', None)
 sys_path_bak = list(sys.path)
 cwd = os.getcwd()
 file_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else cwd
 sys.path = [p for p in sys.path if p not in ('', cwd, file_dir)]
 try:
-    from binance.client import Client
-    from binance.exceptions import BinanceAPIException
+    binance_pkg = importlib.import_module('binance')
+    Client = binance_pkg.client.Client
+    BinanceAPIException = binance_pkg.exceptions.BinanceAPIException
 finally:
     sys.path = sys_path_bak
+    if local_bin_module is not None:
+        sys.modules['binance'] = local_bin_module
 
 
 class BinanceAperturaBot:
@@ -326,14 +331,15 @@ class BinanceAperturaBot:
     def analyze_strategy_apertura(self):
         """
         Análisis de la Estrategia de Apertura:
-        1) Vela de 1 min de apertura Euronext (04:00 hs), Tokio (21:00 hs) y NY (10:30 hs).
-        2) Tendencia en velas de 5 min.
-        3) Impulso -> Retroceso Fibonacci / Retroceso -> Extensión Fibonacci en velas de 5 min.
-        4) Reglas de Entrada: Long si vela de apertura ROJA; Short si vela de apertura VERDE.
+        1) Vela de 1 min de apertura Euronext (04:00 hs), Tokio (21:00 hs) y NY (10:30 hs) ART.
+        2) Tendencia en velas de 5 min (EMA 20 vs EMA 50).
+        3) Impulso a favor de tendencia -> Retroceso Fibonacci en 5m.
+        4) Retroceso contra tendencia -> Extensión Fibonacci en 5m.
+        5) LONG si vela de apertura ROJA -> Entrada en 1ra línea Fib, TP 1ra línea Fib, SL 3ra línea Fib.
+        6) SHORT si vela de apertura VERDE -> Entrada en 1ra línea Fib, TP 1ra línea Fib, SL 3ra línea Fib.
         """
         ba_tz = timezone(timedelta(hours=-3))
         now_ba = datetime.now(ba_tz)
-        today_date = now_ba.date()
 
         df_1m = self.fetch_klines(timeframe='1m', limit=500)
         df_5m = self.fetch_klines(timeframe='5m', limit=100)
@@ -343,6 +349,7 @@ class BinanceAperturaBot:
             'vela_apertura_str': 'ESPERANDO APERTURA',
             'vela_color': 'NINGUNA',
             'trend': 'NEUTRAL',
+            'mov_tipo': 'IMPULSO',
             'signal': None,
             'fib_s1': 0.0,
             'fib_s3': 0.0,
@@ -363,13 +370,23 @@ class BinanceAperturaBot:
 
         # 1. Buscar velas de 1m de apertura de mercado (Euronext 04:00, Tokio 21:00, NY 10:30)
         openings = [
-            {'bolsa': 'Tokio', 'hour': 21, 'minute': 0, 'label': 'Tokio (21:00 1m)'},
             {'bolsa': 'NY', 'hour': 10, 'minute': 30, 'label': 'NY (10:30 1m)'},
+            {'bolsa': 'Tokio', 'hour': 21, 'minute': 0, 'label': 'Tokio (21:00 1m)'},
             {'bolsa': 'Euronext', 'hour': 4, 'minute': 0, 'label': 'Euronext (04:00 1m)'}
         ]
 
+        # Priorizar sesión activa según la hora actual
+        t_now = now_ba.time()
+        if dtime(10, 30) <= t_now < dtime(17, 0):
+            openings.sort(key=lambda x: 0 if x['bolsa'] == 'NY' else 1)
+        elif t_now >= dtime(21, 0) or t_now < dtime(3, 0):
+            openings.sort(key=lambda x: 0 if x['bolsa'] == 'Tokio' else 1)
+        elif dtime(4, 0) <= t_now < dtime(12, 30):
+            openings.sort(key=lambda x: 0 if x['bolsa'] == 'Euronext' else 1)
+
         active_open_candle = None
         selected_bolsa = "NINGUNA"
+        selected_label = ""
 
         for op in openings:
             candles = df_1m[
@@ -403,38 +420,62 @@ class BinanceAperturaBot:
         last_ema50 = df_5m['ema50'].iloc[-1]
         trend = "ALCISTA" if last_ema20 >= last_ema50 else "BAJISTA"
 
-        # 3. Fibonacci en velas de 5 min (Swing High/Low en últimas 30 velas 5m)
+        # 3. Determinar Impulso a favor de tendencia vs Retroceso contra tendencia
+        # En tendencia alcista: precio >= EMA20 -> Impulso; precio < EMA20 -> Retroceso
+        # En tendencia bajista: precio <= EMA20 -> Impulso; precio > EMA20 -> Retroceso
+        if trend == "ALCISTA":
+            is_impulso = curr_price >= last_ema20
+        else:
+            is_impulso = curr_price <= last_ema20
+
+        mov_tipo = "IMPULSO (A Favor)" if is_impulso else "RETROCESO (En Contra)"
+
+        # 4. Cálculo de Fibonacci en velas de 5 min (Swing High / Swing Low en 30 velas)
         swing_high = df_5m['high'].tail(30).max()
         swing_low = df_5m['low'].tail(30).min()
         range_fib = swing_high - swing_low
 
         if range_fib > 0:
-            if trend == "ALCISTA":
-                # Impulso Alcista: Retroceso desde el Alto
-                fib_s1 = swing_high - (0.382 * range_fib)
-                fib_s3 = swing_high - (0.618 * range_fib)
-                fib_r1 = swing_high
-                fib_r3 = swing_high + (0.618 * range_fib)
+            if is_impulso:
+                # Impulso a favor -> Retroceso de Fibonacci (38.2% y 61.8%)
+                if trend == "ALCISTA":
+                    fib_s1 = swing_high - (0.382 * range_fib)  # 1ra linea soporte
+                    fib_s3 = swing_high - (0.618 * range_fib)  # 3ra linea soporte
+                    fib_r1 = swing_high                        # 1ra linea resistencia TP
+                    fib_r3 = swing_high + (0.618 * range_fib)  # 3ra linea resistencia SL
+                else:
+                    fib_r1 = swing_low + (0.382 * range_fib)   # 1ra linea resistencia
+                    fib_r3 = swing_low + (0.618 * range_fib)   # 3ra linea resistencia
+                    fib_s1 = swing_low                         # 1ra linea soporte TP
+                    fib_s3 = swing_low - (0.618 * range_fib)   # 3ra linea soporte SL
             else:
-                # Impulso Bajista: Retroceso desde el Bajo
-                fib_r1 = swing_low + (0.382 * range_fib)
-                fib_r3 = swing_low + (0.618 * range_fib)
-                fib_s1 = swing_low
-                fib_s3 = swing_low - (0.618 * range_fib)
+                # Retroceso contra la tendencia -> Extensión de Fibonacci (127.2% y 161.8%)
+                if trend == "ALCISTA":
+                    fib_r1 = swing_high + (0.272 * range_fib)  # 1ra extension resistencia
+                    fib_r3 = swing_high + (0.618 * range_fib)  # 3ra extension resistencia
+                    fib_s1 = swing_low - (0.272 * range_fib)   # 1ra extension soporte
+                    fib_s3 = swing_low - (0.618 * range_fib)   # 3ra extension soporte
+                else:
+                    fib_s1 = swing_low - (0.272 * range_fib)   # 1ra extension soporte
+                    fib_s3 = swing_low - (0.618 * range_fib)   # 3ra extension soporte
+                    fib_r1 = swing_high + (0.272 * range_fib)  # 1ra extension resistencia
+                    fib_r3 = swing_high + (0.618 * range_fib)  # 3ra extension resistencia
         else:
             fib_s1 = curr_price * 0.998
             fib_s3 = curr_price * 0.995
             fib_r1 = curr_price * 1.002
             fib_r3 = curr_price * 1.005
 
-        # 4. Señal de entrada
+        # 5. Señal de entrada (Puntos 7 y 8)
         signal = None
         if vela_color == "ROJA":
-            # Entrada LONG en 1er Soporte Fibonacci
+            # Puntu 7: Entrada LONG cuando vela de apertura es ROJA
+            # Entrada en 1ra línea Fib (S1), TP en 1ra línea Fib (R1), SL en 3ra línea Fib (S3)
             if curr_price <= fib_s1 * 1.0005:
                 signal = "LONG"
         elif vela_color == "VERDE":
-            # Entrada SHORT en 1ra Resistencia Fibonacci
+            # Punto 8: Entrada SHORT cuando vela de apertura es VERDE
+            # Entrada en 1ra línea Fib (R1), TP en 1ra línea Fib (S1), SL en 3ra línea Fib (R3)
             if curr_price >= fib_r1 * 0.9995:
                 signal = "SHORT"
 
@@ -443,6 +484,7 @@ class BinanceAperturaBot:
             'vela_apertura_str': vela_apertura_str,
             'vela_color': vela_color,
             'trend': trend,
+            'mov_tipo': mov_tipo,
             'signal': signal,
             'fib_s1': self._format_price(fib_s1),
             'fib_s3': self._format_price(fib_s3),
