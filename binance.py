@@ -15,7 +15,7 @@ Parámetros:
 - Cálculo de Soportes y Resistencias S1, S3, R1, R3 para velas de 5 min.
 - Regla LONG: Vela de apertura ROJA -> Entrada en 1er soporte (S1), TP en 1ra resistencia (R1), SL en 3er soporte (S3).
 - Regla SHORT: Vela de apertura VERDE -> Entrada en 1ra resistencia (R1), TP en 1er soporte (S1), SL en 3ra resistencia (R3).
-- Visualización: Monocroma (sin colores ANSI), cabecera siempre visible, borrar pantalla antes de actualizar.
+- Visualización: Monocroma (sin colores ANSI), cabecera siempre visible, reposicionar el cursor al inicio de la pantalla antes de actualizar.
 - Formato del estado actual (4 líneas debajo de la cabecera):
   Línea 1: Nombre de estrategia
   Línea 2: Precio, vela apertura
@@ -677,7 +677,7 @@ class BinanceAperturaBot:
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla únicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
-        - Borrar pantalla antes de actualizar la visualización de datos.
+        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos.
 
         Formato del estado actual (4 líneas debajo de la cabecera):
         1) nombre de estrategia
@@ -685,7 +685,8 @@ class BinanceAperturaBot:
         3) horario
         4) posicion
         """
-        # 1. Borrar pantalla antes de actualizar
+        # 1. Reposicionar el cursor al inicio de la pantalla antes de actualizar
+        sys.stdout.write("\033[H")
         os.system('cls' if os.name == 'nt' else 'clear')
 
         # 2. Consultar balance
