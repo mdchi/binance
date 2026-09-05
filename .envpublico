@@ -1,17 +1,21 @@
-# Parámetros Generales del Bot de Trading Binance (Público)
+# Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
 MARGIN_USDT=5.0
 LEVERAGE=10
+MARGIN_TYPE=ISOLATED
 
-# Estrategia: Apertura (1m / 5m + Trend + Fibonacci S1/S3 y R1/R3)
+# Estrategia: Apertura (1m / 5m + S1/S3 y R1/R3)
 TIMEFRAME_OPEN=1m
 TIMEFRAME_TREND=5m
+PIVOT_TYPE=CLASSIC
 
 # Horarios de Apertura de Bolsa (Horario Buenos Aires UTC-3)
 # 1) Euronext: 04:00 hs
 # 2) Tokio: 21:00 hs
 # 3) New York: 10:30 hs
-OPENING_TIMES=04:00,21:00,10:30
+NY_OPEN_TIME=10:30
+TOKYO_OPEN_TIME=21:00
+EURONEXT_OPEN_TIME=04:00
 
 # Horarios de Operación de Bolsas (Buenos Aires UTC-3)
 EURONEXT_SCHEDULE_START=04:00
@@ -23,12 +27,10 @@ TOKYO_SCHEDULE_END=03:00
 NY_SCHEDULE_START=10:30
 NY_SCHEDULE_END=17:00
 
-# Modos de Ejecución
+# Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
 USE_TESTNET=False
 
 # Configuración de Filtro Horario
 ENABLE_SCHEDULE_FILTER=True
 SCHEDULE_WEEKDAYS_ONLY=True
-
-

@@ -2,24 +2,27 @@
 # -*- coding: utf-8 -*-
 """
 Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia: Apertura de Mercado (Euronext, Tokio, New York)
+Estrategia: Apertura de Mercado (New York, Tokio, Euronext)
 
 Parámetros:
 - Modo: Aislado (Isolated)
 - Apalancamiento: 10x
 - Monto por Operación: 5 USDT
-- Velas de Apertura de 1 min:
-  1) Bolsa New York: 10:30 hs (Horario Buenos Aires UTC-3)
-  2) Bolsa Tokio: 21:00 hs (Horario Buenos Aires UTC-3)
-  3) Bolsa Euronext: 04:00 hs (Horario Buenos Aires UTC-3)
-- Tendencia en Velas de 5 min (EMA 20 vs EMA 50).
-- Impulso a favor de tendencia -> Retroceso Fibonacci en 5m.
-- Retroceso contra tendencia -> Extensión Fibonacci en 5m.
-- Regla LONG: Vela de apertura ROJA -> Entrada en 1ra línea Fibonacci, TP en 1ra línea Fibonacci, SL en 3ra línea Fibonacci.
-- Regla SHORT: Vela de apertura VERDE -> Entrada en 1ra línea Fibonacci, TP en 1ra línea Fibonacci, SL en 3ra línea Fibonacci.
-- Operar únicamente en horario de bolsa de EEUU, Tokio y Euronext.
-- Visualización: Monocroma (sin colores ANSI), cabecera visible, borrar pantalla antes de actualizar.
+- Velas de 1 min de Apertura (Horario Buenos Aires UTC-3):
+  1) Bolsa New York: 10:30 hs
+  2) Bolsa Tokio: 21:00 hs
+  3) Bolsa Euronext: 04:00 hs
+- Cálculo de Soportes y Resistencias S1, S3, R1, R3 para velas de 5 min.
+- Regla LONG: Vela de apertura ROJA -> Entrada en 1er soporte (S1), TP en 1ra resistencia (R1), SL en 3er soporte (S3).
+- Regla SHORT: Vela de apertura VERDE -> Entrada en 1ra resistencia (R1), TP en 1er soporte (S1), SL en 3ra resistencia (R3).
+- Visualización: Monocroma (sin colores ANSI), cabecera siempre visible, borrar pantalla antes de actualizar.
+- Formato del estado actual (4 líneas debajo de la cabecera):
+  Línea 1: Nombre de estrategia
+  Línea 2: Precio, vela apertura
+  Línea 3: Horario
+  Línea 4: Posición
 - Registros: tp.txt y sl.txt con columnas alineadas (día, hora, bolsa, % ganancia máx, % pérdida máx, duración).
+- Configuración: API Keys en .envprivado, resto de parámetros en .envpublico.
 """
 
 import os
@@ -39,7 +42,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# 2. Configuración de Logging a bot.log (para mantener consola de usuario limpia)
+# 2. Configuración de Logging a bot.log (para mantener consola limpia)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -57,7 +60,7 @@ for env_pub in [".envpublico", "envpublico", ".env", "env"]:
     if os.path.exists(env_pub):
         load_dotenv(env_pub)
 
-# 4. Importar biblioteca python-binance evitando sombreado local por el archivo binance.py
+# 4. Importar biblioteca python-binance evitando conflicto con el nombre local binance.py
 import importlib
 local_bin_module = sys.modules.pop('binance', None)
 sys_path_bak = list(sys.path)
@@ -76,17 +79,18 @@ finally:
 
 class BinanceAperturaBot:
     def __init__(self):
-        # Cargar credenciales API
+        # Cargar credenciales API desde .envprivado
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
         self.api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
 
-        # Parámetros del Bot
+        # Parámetros del Bot desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
+        self.pivot_type = os.getenv("PIVOT_TYPE", "CLASSIC").upper()
 
         # Modos de Ejecución
-        self.dry_run = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "yes")
+        self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
         # Filtro Horario
@@ -125,7 +129,7 @@ class BinanceAperturaBot:
         self._init_trade_log_files()
 
     def _init_trade_log_files(self):
-        """DETALLES 2: Crear/Inicializar archivos tp.txt y sl.txt con columnas alineadas si no existen o están vacíos."""
+        """DETALLES 2: Inicializar tp.txt y sl.txt con columnas perfectamente alineadas."""
         header = "Dia        | Hora     | Bolsa    | % Ganancia Max | % Perdida Max | Duracion  \n--------------------------------------------------------------------------------\n"
         for filename in ["tp.txt", "sl.txt"]:
             if not os.path.exists(filename) or os.path.getsize(filename) == 0:
@@ -136,7 +140,7 @@ class BinanceAperturaBot:
                     logging.error(f"Error inicializando {filename}: {e}")
 
     def _initialize_client(self):
-        """Inicializa cliente Binance, valida API keys y configura entorno."""
+        """Inicializa cliente Binance, configura margen AISLADO 10x y cierra posiciones abiertas iniciales."""
         logging.info("Inicializando Bot de Trading Binance - Estrategia Apertura...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
@@ -199,7 +203,7 @@ class BinanceAperturaBot:
         return max(rounded, self.min_qty)
 
     def _setup_futures_account(self):
-        """Configura margen AISLADO y apalancamiento 10x."""
+        """Configura margen AISLADO y apalancamiento 10x en Binance Futures."""
         try:
             try:
                 self.client.futures_change_margin_type(symbol=self.symbol, marginType='ISOLATED')
@@ -230,7 +234,7 @@ class BinanceAperturaBot:
             return
 
         try:
-            # Cancelar órdenes limit y algo previas
+            # Cancelar órdenes limit y condicionales previas
             try:
                 self.client.futures_cancel_all_open_orders(symbol=self.symbol)
             except Exception as e:
@@ -292,12 +296,34 @@ class BinanceAperturaBot:
             logging.error(f"Error al obtener klines ({timeframe}): {e}")
             return None
 
+    def is_exchange_active_day(self, bolsa_name, now_ba):
+        """
+        Verifica si la bolsa correspondiente opera en el día actual (Días hábiles):
+        - NY: Lunes a Viernes 10:30 a 17:00 ART (Días hábiles EE.UU.)
+        - Euronext: Lunes a Viernes 04:00 a 12:30 ART (Días hábiles Europa)
+        - Tokio: Domingo 21:00 ART a Viernes 03:00 ART (Lunes a Viernes JST Japón)
+        """
+        weekday = now_ba.weekday()  # 0=Mon, 1=Tue, ..., 4=Fri, 5=Sat, 6=Sun
+        t_now = now_ba.time()
+
+        if bolsa_name == 'Euronext':
+            return (0 <= weekday <= 4) and (dtime(4, 0) <= t_now < dtime(12, 30))
+        elif bolsa_name == 'NY':
+            return (0 <= weekday <= 4) and (dtime(10, 30) <= t_now < dtime(17, 0))
+        elif bolsa_name == 'Tokio':
+            if t_now >= dtime(21, 0):
+                return weekday in (6, 0, 1, 2, 3)
+            elif t_now < dtime(3, 0):
+                return weekday in (0, 1, 2, 3, 4)
+            return False
+        return False
+
     def is_market_open_and_session(self):
         """
-        Punto 9: Operar únicamente en horario de bolsa de EEUU, Tokio y Euronext (Buenos Aires UTC-3).
-        1) Euronext: 04:00 a 12:30 hs ART
-        2) Tokio: 21:00 a 03:00 hs ART
-        3) NY: 10:30 a 17:00 hs ART
+        Verifica el horario y días hábiles de operación para las bolsas (Buenos Aires UTC-3).
+        1) Euronext: Lunes a Viernes 04:00 a 12:30 hs ART
+        2) Tokio: Domingo 21:00 a Viernes 03:00 hs ART (Lunes a Viernes JST)
+        3) New York: Lunes a Viernes 10:30 a 17:00 hs ART
         """
         if not self.enable_schedule:
             return True, "TODAS (Filtro Desactivado)"
@@ -305,38 +331,35 @@ class BinanceAperturaBot:
         ba_tz = timezone(timedelta(hours=-3))
         now_ba = datetime.now(ba_tz)
 
-        if self.schedule_weekdays_only and now_ba.weekday() >= 5:
-            return False, "CERRADO (Fin de Semana)"
-
-        t_now = now_ba.time()
-
-        # Chequear sesiones
-        in_euronext = dtime(4, 0) <= t_now < dtime(12, 30)
-        in_tokyo = t_now >= dtime(21, 0) or t_now < dtime(3, 0)
-        in_ny = dtime(10, 30) <= t_now < dtime(17, 0)
-
         active_sessions = []
-        if in_euronext:
+        if self.is_exchange_active_day('Euronext', now_ba):
             active_sessions.append("Euronext [04:00-12:30]")
-        if in_tokyo:
+        if self.is_exchange_active_day('Tokio', now_ba):
             active_sessions.append("Tokio [21:00-03:00]")
-        if in_ny:
+        if self.is_exchange_active_day('NY', now_ba):
             active_sessions.append("NY [10:30-17:00]")
 
         if active_sessions:
             return True, " / ".join(active_sessions)
         else:
-            return False, "CERRADO (Fuera de Horario de Bolsas)"
+            return False, "CERRADO (Fuera de Días Hábiles o Horario de Bolsas)"
 
     def analyze_strategy_apertura(self):
         """
-        Análisis de la Estrategia de Apertura:
-        1) Vela de 1 min de apertura Euronext (04:00 hs), Tokio (21:00 hs) y NY (10:30 hs) ART.
-        2) Tendencia en velas de 5 min (EMA 20 vs EMA 50).
-        3) Impulso a favor de tendencia -> Retroceso Fibonacci en 5m.
-        4) Retroceso contra tendencia -> Extensión Fibonacci en 5m.
-        5) LONG si vela de apertura ROJA -> Entrada en 1ra línea Fib, TP 1ra línea Fib, SL 3ra línea Fib.
-        6) SHORT si vela de apertura VERDE -> Entrada en 1ra línea Fib, TP 1ra línea Fib, SL 3ra línea Fib.
+        Estrategia de Apertura:
+        1) Vela de 1 min de apertura:
+           - New York: 10:30 hs (Horario Buenos Aires)
+           - Tokio: 21:00 hs (Horario Buenos Aires)
+           - Euronext: 04:00 hs (Horario Buenos Aires)
+        2) Soportes y Resistencias calculados para velas de 5 min (S1, S3, R1, R3).
+        3) LONG cuando vela de apertura es ROJA:
+           - Entrada en primer soporte S1
+           - TP en primera resistencia R1
+           - SL en tercer soporte S3
+        4) SHORT cuando vela de apertura es VERDE:
+           - Entrada en primera resistencia R1
+           - TP en primer soporte S1
+           - SL en tercera resistencia R3
         """
         ba_tz = timezone(timedelta(hours=-3))
         now_ba = datetime.now(ba_tz)
@@ -348,13 +371,11 @@ class BinanceAperturaBot:
             'bolsa_nombre': 'NINGUNA',
             'vela_apertura_str': 'ESPERANDO APERTURA',
             'vela_color': 'NINGUNA',
-            'trend': 'NEUTRAL',
-            'mov_tipo': 'IMPULSO',
             'signal': None,
-            'fib_s1': 0.0,
-            'fib_s3': 0.0,
-            'fib_r1': 0.0,
-            'fib_r3': 0.0,
+            's1': 0.0,
+            's3': 0.0,
+            'r1': 0.0,
+            'r3': 0.0,
             'current_price': 0.0
         }
 
@@ -368,14 +389,13 @@ class BinanceAperturaBot:
         df_1m['timestamp_ba'] = df_1m['timestamp'].dt.tz_localize('UTC').dt.tz_convert(ba_tz)
         df_5m['timestamp_ba'] = df_5m['timestamp'].dt.tz_localize('UTC').dt.tz_convert(ba_tz)
 
-        # 1. Buscar velas de 1m de apertura de mercado (Euronext 04:00, Tokio 21:00, NY 10:30)
+        # 1. Velas de 1m de apertura de mercado (NY 10:30, Tokio 21:00, Euronext 04:00)
         openings = [
             {'bolsa': 'NY', 'hour': 10, 'minute': 30, 'label': 'NY (10:30 1m)'},
             {'bolsa': 'Tokio', 'hour': 21, 'minute': 0, 'label': 'Tokio (21:00 1m)'},
             {'bolsa': 'Euronext', 'hour': 4, 'minute': 0, 'label': 'Euronext (04:00 1m)'}
         ]
 
-        # Priorizar sesión activa según la hora actual
         t_now = now_ba.time()
         if dtime(10, 30) <= t_now < dtime(17, 0):
             openings.sort(key=lambda x: 0 if x['bolsa'] == 'NY' else 1)
@@ -413,83 +433,55 @@ class BinanceAperturaBot:
             vela_apertura_str = "ESPERANDO APERTURA (04:00, 10:30, 21:00 ART)"
             selected_bolsa = "GENERAL"
 
-        # 2. Tendencia para velas de 5 min (EMA 20 vs EMA 50)
-        df_5m['ema20'] = df_5m['close'].ewm(span=20, adjust=False).mean()
-        df_5m['ema50'] = df_5m['close'].ewm(span=50, adjust=False).mean()
-        last_ema20 = df_5m['ema20'].iloc[-1]
-        last_ema50 = df_5m['ema50'].iloc[-1]
-        trend = "ALCISTA" if last_ema20 >= last_ema50 else "BAJISTA"
+        # 2. Cálculo de Soportes y Resistencias para velas de 5 min (S1, S3, R1, R3)
+        high_5m = df_5m['high'].iloc[-2] if len(df_5m) >= 2 else df_5m['high'].max()
+        low_5m = df_5m['low'].iloc[-2] if len(df_5m) >= 2 else df_5m['low'].min()
+        close_5m = df_5m['close'].iloc[-2] if len(df_5m) >= 2 else df_5m['close'].iloc[-1]
 
-        # 3. Determinar Impulso a favor de tendencia vs Retroceso contra tendencia
-        # En tendencia alcista: precio >= EMA20 -> Impulso; precio < EMA20 -> Retroceso
-        # En tendencia bajista: precio <= EMA20 -> Impulso; precio > EMA20 -> Retroceso
-        if trend == "ALCISTA":
-            is_impulso = curr_price >= last_ema20
-        else:
-            is_impulso = curr_price <= last_ema20
-
-        mov_tipo = "IMPULSO (A Favor)" if is_impulso else "RETROCESO (En Contra)"
-
-        # 4. Cálculo de Fibonacci en velas de 5 min (Swing High / Swing Low en 30 velas)
-        swing_high = df_5m['high'].tail(30).max()
-        swing_low = df_5m['low'].tail(30).min()
-        range_fib = swing_high - swing_low
-
-        if range_fib > 0:
-            if is_impulso:
-                # Impulso a favor -> Retroceso de Fibonacci (38.2% y 61.8%)
-                if trend == "ALCISTA":
-                    fib_s1 = swing_high - (0.382 * range_fib)  # 1ra linea soporte
-                    fib_s3 = swing_high - (0.618 * range_fib)  # 3ra linea soporte
-                    fib_r1 = swing_high                        # 1ra linea resistencia TP
-                    fib_r3 = swing_high + (0.618 * range_fib)  # 3ra linea resistencia SL
-                else:
-                    fib_r1 = swing_low + (0.382 * range_fib)   # 1ra linea resistencia
-                    fib_r3 = swing_low + (0.618 * range_fib)   # 3ra linea resistencia
-                    fib_s1 = swing_low                         # 1ra linea soporte TP
-                    fib_s3 = swing_low - (0.618 * range_fib)   # 3ra linea soporte SL
+        if self.pivot_type == "FIBONACCI":
+            swing_high = df_5m['high'].tail(30).max()
+            swing_low = df_5m['low'].tail(30).min()
+            swing_close = df_5m['close'].iloc[-1]
+            pivot = (swing_high + swing_low + swing_close) / 3.0
+            rng = swing_high - swing_low
+            if rng > 0:
+                s1 = pivot - (0.382 * rng)
+                s3 = pivot - (1.000 * rng)
+                r1 = pivot + (0.382 * rng)
+                r3 = pivot + (1.000 * rng)
             else:
-                # Retroceso contra la tendencia -> Extensión de Fibonacci (127.2% y 161.8%)
-                if trend == "ALCISTA":
-                    fib_r1 = swing_high + (0.272 * range_fib)  # 1ra extension resistencia
-                    fib_r3 = swing_high + (0.618 * range_fib)  # 3ra extension resistencia
-                    fib_s1 = swing_low - (0.272 * range_fib)   # 1ra extension soporte
-                    fib_s3 = swing_low - (0.618 * range_fib)   # 3ra extension soporte
-                else:
-                    fib_s1 = swing_low - (0.272 * range_fib)   # 1ra extension soporte
-                    fib_s3 = swing_low - (0.618 * range_fib)   # 3ra extension soporte
-                    fib_r1 = swing_high + (0.272 * range_fib)  # 1ra extension resistencia
-                    fib_r3 = swing_high + (0.618 * range_fib)  # 3ra extension resistencia
+                s1 = curr_price * 0.998
+                s3 = curr_price * 0.995
+                r1 = curr_price * 1.002
+                r3 = curr_price * 1.005
         else:
-            fib_s1 = curr_price * 0.998
-            fib_s3 = curr_price * 0.995
-            fib_r1 = curr_price * 1.002
-            fib_r3 = curr_price * 1.005
+            # Pivot Points Clásicos en velas de 5 min (por defecto)
+            pivot = (high_5m + low_5m + close_5m) / 3.0
+            s1 = (2.0 * pivot) - high_5m
+            s3 = low_5m - (2.0 * (high_5m - pivot))
+            r1 = (2.0 * pivot) - low_5m
+            r3 = high_5m + (2.0 * (pivot - low_5m))
 
-        # 5. Señal de entrada (Puntos 7 y 8)
+        # 3. Definir Señal de Entrada según reglas de apertura
         signal = None
         if vela_color == "ROJA":
-            # Puntu 7: Entrada LONG cuando vela de apertura es ROJA
-            # Entrada en 1ra línea Fib (S1), TP en 1ra línea Fib (R1), SL en 3ra línea Fib (S3)
-            if curr_price <= fib_s1 * 1.0005:
+            # Entrada LONG en primer soporte S1
+            if curr_price <= s1 * 1.0005:
                 signal = "LONG"
         elif vela_color == "VERDE":
-            # Punto 8: Entrada SHORT cuando vela de apertura es VERDE
-            # Entrada en 1ra línea Fib (R1), TP en 1ra línea Fib (S1), SL en 3ra línea Fib (R3)
-            if curr_price >= fib_r1 * 0.9995:
+            # Entrada SHORT en primera resistencia R1
+            if curr_price >= r1 * 0.9995:
                 signal = "SHORT"
 
         return {
             'bolsa_nombre': selected_bolsa,
             'vela_apertura_str': vela_apertura_str,
             'vela_color': vela_color,
-            'trend': trend,
-            'mov_tipo': mov_tipo,
             'signal': signal,
-            'fib_s1': self._format_price(fib_s1),
-            'fib_s3': self._format_price(fib_s3),
-            'fib_r1': self._format_price(fib_r1),
-            'fib_r3': self._format_price(fib_r3),
+            's1': self._format_price(s1),
+            's3': self._format_price(s3),
+            'r1': self._format_price(r1),
+            'r3': self._format_price(r3),
             'current_price': curr_price
         }
 
@@ -512,21 +504,21 @@ class BinanceAperturaBot:
             logging.error(f"Error consultando posiciones activas: {e}")
             return self.current_position, self.entry_price, self.position_qty
 
-    def open_position(self, side, current_price, fib_data, bolsa_nombre):
+    def open_position(self, side, current_price, pivot_data, bolsa_nombre):
         """
-        Entrada en posición según reglas:
-        Long: Entrada en 1er soporte Fib ($S_1$), TP en 1ra resistencia Fib ($R_1$), SL en 3er soporte Fib ($S_3$).
-        Short: Entrada en 1ra resistencia Fib ($R_1$), TP en 1er soporte Fib ($S_1$), SL en 3ra resistencia Fib ($R_3$).
+        Ejecuta apertura de posición:
+        LONG:  Entrada en S1, TP en R1, SL en S3.
+        SHORT: Entrada en R1, TP en S1, SL en R3.
         """
         notional_val = self.margin_usdt * self.leverage
         qty = self._format_quantity(notional_val / current_price)
 
         if side == 'LONG':
-            tp_price = fib_data['fib_r1']
-            sl_price = fib_data['fib_s3']
+            tp_price = pivot_data['r1']
+            sl_price = pivot_data['s3']
         else:
-            tp_price = fib_data['fib_s1']
-            sl_price = fib_data['fib_r3']
+            tp_price = pivot_data['s1']
+            sl_price = pivot_data['r3']
 
         logging.info(f"ENTRADA APERTURA [{bolsa_nombre}]: {side} a ${current_price:.2f} | TP: ${tp_price} | SL: ${sl_price}")
 
@@ -543,7 +535,7 @@ class BinanceAperturaBot:
             return True
 
         try:
-            # Cancelar órdenes previas
+            # Cancelar órdenes pendientes previas
             try:
                 self.client.futures_cancel_all_open_orders(symbol=self.symbol)
                 self.client._request_futures_api("delete", "algoOpenOrders", signed=True, data={"symbol": self.symbol})
@@ -565,7 +557,7 @@ class BinanceAperturaBot:
 
             exit_side = 'SELL' if side == 'LONG' else 'BUY'
 
-            # Take Profit en orden condicional
+            # Configurar Take Profit condicional
             try:
                 self.client._request_futures_api(
                     "post", "algoOrder", signed=True,
@@ -579,9 +571,9 @@ class BinanceAperturaBot:
                     }
                 )
             except Exception as e:
-                logging.error(f"Error creando TP algo: {e}")
+                logging.error(f"Error creando orden TP: {e}")
 
-            # Stop Loss en orden condicional
+            # Configurar Stop Loss condicional
             try:
                 self.client._request_futures_api(
                     "post", "algoOrder", signed=True,
@@ -595,7 +587,7 @@ class BinanceAperturaBot:
                     }
                 )
             except Exception as e:
-                logging.error(f"Error creando SL algo: {e}")
+                logging.error(f"Error creando orden SL: {e}")
 
             self.current_position = side
             self.active_bolsa = bolsa_nombre
@@ -609,7 +601,7 @@ class BinanceAperturaBot:
             return True
 
         except Exception as e:
-            logging.error(f"Error al ejecutar orden en Binance: {e}")
+            logging.error(f"Error al ejecutar orden en Binance Futures: {e}")
             return False
 
     def _record_trade_result(self, pnl):
@@ -647,7 +639,7 @@ class BinanceAperturaBot:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
     def check_simulated_exit(self, current_price):
-        """Evalúa TP y SL en simulación."""
+        """Evalúa TP y SL en modo simulación."""
         if not self.dry_run or not self.current_position:
             return
 
@@ -681,22 +673,22 @@ class BinanceAperturaBot:
 
     def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins, schedule_ok, schedule_reason):
         """
-        DETALLES 3:
-        1) Mantener cabecera siempre visible en pantalla.
-        2) Mantener visible en pantalla únicamente el estado actual.
-        3) No utilizar colores en todo el texto visualizado en pantalla.
-        4) Borrar pantalla antes de actualizar la visualización de datos.
+        DETALLES 3 & PUNTO 5:
+        - Mantener cabecera siempre visible en pantalla.
+        - Mantener visible en pantalla únicamente el estado actual.
+        - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
+        - Borrar pantalla antes de actualizar la visualización de datos.
 
-        Formato del estado actual (exactamente 4 líneas):
-        en una linea: nombre de estrategia
-        en otra linea: precio, vela apertura
-        en otra linea: horario
-        en otra linea: posicion
+        Formato del estado actual (4 líneas debajo de la cabecera):
+        1) nombre de estrategia
+        2) precio, vela apertura
+        3) horario
+        4) posicion
         """
         # 1. Borrar pantalla antes de actualizar
         os.system('cls' if os.name == 'nt' else 'clear')
 
-        # 2. Consultar saldo
+        # 2. Consultar balance
         if self.dry_run:
             wallet_bal = self.simulated_balance
             avail_bal = self.simulated_balance
@@ -724,13 +716,13 @@ class BinanceAperturaBot:
         else:
             pos_str = "SIN POSICION"
 
-        # Construcción del texto de consola (sin secuencias de colores ANSI)
+        # Construcción del texto en consola (Monocromo, sin secuencias ANSI)
         lines = []
         lines.append("======================================================================")
-        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTADO ACTUAL")
+        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - MONITOREO REAL")
         lines.append("======================================================================")
         lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
-        lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL API'}")
+        lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL API (Binance Futures)'}")
         lines.append("----------------------------------------------------------------------")
         if has_keys:
             lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
@@ -739,12 +731,12 @@ class BinanceAperturaBot:
         lines.append(f"Resumen General: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 
-        # Formato exacto de 4 líneas para el estado actual de la estrategia:
-        # Linea 1: nombre de estrategia
-        # Linea 2: precio, vela apertura
-        # Linea 3: horario
-        # Linea 4: posicion
-        lines.append("Estrategia: Apertura Market Open (Euronext 04:00 / NY 10:30 / Tokio 21:00 hs)")
+        # Exactamente 4 líneas para el estado actual de la estrategia:
+        # Línea 1: nombre de estrategia
+        # Línea 2: precio, vela apertura
+        # Línea 3: horario
+        # Línea 4: posicion
+        lines.append("Estrategia: Apertura de Mercado (NY 10:30 / Tokio 21:00 / Euronext 04:00 ART)")
         lines.append(f"Precio: ${strat_data['current_price']:.2f} | Vela Apertura: {strat_data['vela_apertura_str']}")
         lines.append(f"Horario: {schedule_reason}")
         lines.append(f"Posicion: {pos_str}")
@@ -774,7 +766,7 @@ class BinanceAperturaBot:
                     self.check_simulated_exit(curr_price)
                     active_pos, entry, qty = self.get_active_position()
                 elif not self.dry_run and active_pos is None and self.current_position:
-                    # Cierre real por TP/SL
+                    # Cierre real detectado
                     exit_time = datetime.now()
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
 
@@ -812,7 +804,7 @@ class BinanceAperturaBot:
                 # 3. Validar horario de operación
                 schedule_ok, schedule_reason = self.is_market_open_and_session()
 
-                # 4. Renderizar pantalla monocromática con estado actual
+                # 4. Renderizar pantalla monocromática con cabecera y estado actual
                 self.render_screen(
                     strat_data=strat_data,
                     active_pos=active_pos,
@@ -829,7 +821,7 @@ class BinanceAperturaBot:
                     self.open_position(
                         side=strat_data['signal'],
                         current_price=curr_price,
-                        fib_data=strat_data,
+                        pivot_data=strat_data,
                         bolsa_nombre=strat_data['bolsa_nombre']
                     )
 
