@@ -35,7 +35,9 @@ import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 
-# 1. Configuración de encoding para consola Windows
+# 1. Configuración de encoding y modo ANSI/VT para consola Windows
+if os.name == 'nt':
+    os.system('')
 if hasattr(sys.stdout, 'reconfigure'):
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -685,9 +687,8 @@ class BinanceAperturaBot:
         3) horario
         4) posicion
         """
-        # 1. Reposicionar el cursor al inicio de la pantalla antes de actualizar
+        # 1. Reposicionar el cursor al inicio de la pantalla antes de actualizar (sin borrar por completo)
         sys.stdout.write("\033[H")
-        os.system('cls' if os.name == 'nt' else 'clear')
 
         # 2. Consultar balance
         if self.dry_run:
@@ -743,7 +744,8 @@ class BinanceAperturaBot:
         lines.append(f"Posicion: {pos_str}")
         lines.append("======================================================================")
 
-        sys.stdout.write("\n".join(lines) + "\n")
+        rendered_output = "\n".join(line + "\033[K" for line in lines) + "\033[J\n"
+        sys.stdout.write(rendered_output)
         sys.stdout.flush()
 
     def run(self):
