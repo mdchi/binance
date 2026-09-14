@@ -4,33 +4,18 @@ MARGIN_USDT=5.0
 LEVERAGE=10
 MARGIN_TYPE=ISOLATED
 
-# Estrategia: Apertura (1m / 5m + S1/S3 y R1/R3)
-TIMEFRAME_OPEN=1m
-TIMEFRAME_TREND=5m
-PIVOT_TYPE=CLASSIC
+# Estrategia: RSI + VWAP (Velas de 1 minuto, Operación 24/7)
+TIMEFRAME=1m
+RSI_PERIOD=14
+RSI_OVERSOLD=30.0
+RSI_OVERBOUGHT=70.0
 
-# Horarios de Apertura de Bolsa (Horario Buenos Aires UTC-3)
-# 1) Euronext: 04:00 hs
-# 2) Tokio: 21:00 hs
-# 3) New York: 10:30 hs
-NY_OPEN_TIME=10:30
-TOKYO_OPEN_TIME=21:00
-EURONEXT_OPEN_TIME=04:00
-
-# Horarios de Operación de Bolsas (Buenos Aires UTC-3)
-EURONEXT_SCHEDULE_START=04:00
-EURONEXT_SCHEDULE_END=12:30
-
-TOKYO_SCHEDULE_START=21:00
-TOKYO_SCHEDULE_END=03:00
-
-NY_SCHEDULE_START=10:30
-NY_SCHEDULE_END=17:00
+# Operación 24 hs los 7 días de la semana
+OPERATE_24_7=True
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
 USE_TESTNET=False
 
-# Configuración de Filtro Horario
-ENABLE_SCHEDULE_FILTER=True
-SCHEDULE_WEEKDAYS_ONLY=True
+# Intervalo de actualización en segundos
+POLL_INTERVAL_SEC=3

@@ -1,28 +1,42 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de Trading Automático en Binance Futures (USDT-M)
-Estrategia: Apertura de Mercado (New York, Tokio, Euronext)
+Bot de trading automatico en Binance.com (USDT-M Futures)
 
-Parámetros:
-- Modo: Aislado (Isolated)
-- Apalancamiento: 10x
-- Monto por Operación: 5 USDT
-- Velas de 1 min de Apertura (Horario Buenos Aires UTC-3):
-  1) Bolsa New York: 10:30 hs
-  2) Bolsa Tokio: 21:00 hs
-  3) Bolsa Euronext: 04:00 hs
-- Cálculo de Soportes y Resistencias S1, S3, R1, R3 para velas de 5 min.
-- Regla LONG: Vela de apertura ROJA -> Entrada en 1er soporte (S1), TP en 1ra resistencia (R1), SL en 3er soporte (S3).
-- Regla SHORT: Vela de apertura VERDE -> Entrada en 1ra resistencia (R1), TP en 1er soporte (S1), SL en 3ra resistencia (R3).
-- Visualización: Monocroma (sin colores ANSI), cabecera siempre visible, reposicionar el cursor al inicio de la pantalla antes de actualizar.
-- Formato del estado actual (4 líneas debajo de la cabecera):
-  Línea 1: Nombre de estrategia
-  Línea 2: Precio, vela apertura
-  Línea 3: Horario
-  Línea 4: Posición
-- Registros: tp.txt y sl.txt con columnas alineadas (día, hora, bolsa, % ganancia máx, % pérdida máx, duración).
-- Configuración: API Keys en .envprivado, resto de parámetros en .envpublico.
+Configuración:
+- Modo Aislado (ISOLATED)
+- Apalancamiento 10x
+- Monto 5 USDT por operación
+- Operaciones con dinero real habilitadas (DRY_RUN=False por defecto)
+
+Estrategia: RSI + VWAP
+1) Operar 24 hs los 7 días de la semana
+2) Entrada en LONG: cuando el RSI está en zona de sobreventa por debajo de 30 en velas de 1 min
+   y el precio cruza hacia arriba al VWAP en velas de 1 min.
+   Cerrar operación cuando el precio cruza hacia abajo el VWAP en velas de 1 min.
+   No colocar SL.
+3) Entrada en SHORT: cuando el RSI está en zona de sobrecompra por arriba de 70 en velas de 1 min
+   y el precio cruza hacia abajo al VWAP en velas de 1 min.
+   Cerrar operación cuando el precio cruza hacia arriba el VWAP en velas de 1 min.
+   No colocar SL.
+
+Formato del estado actual para estrategia:
+en una linea: nombre de estrategia
+en otra linea: precio
+en otra linea: horario
+en otra linea: posicion
+
+Detalles:
+1) Cerrar posiciones abiertas al iniciar bot
+2) Crear archivos 2ganadas.txt y 2perdidas.txt con columnas alineadas:
+   dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
+3) Mantener cabecera siempre visible en pantalla.
+   Mantener visible en pantalla únicamente el estado actual.
+   No utilizar colores en todo el texto visualizado en pantalla.
+   Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos en vez de borrar la pantalla por completo.
+   Hacer operaciones con dinero real.
+4) .envprivado con la configuración de API de Binance
+   .envpublico con el resto de parámetros
 """
 
 import os
@@ -30,12 +44,12 @@ import sys
 import time
 import math
 import logging
-from datetime import datetime, timezone, timedelta, time as dtime
+from datetime import datetime, timezone, timedelta
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 
-# 1. Configuración de encoding y modo ANSI/VT para consola Windows
+# 1. Configuración de consola Windows para soporte ANSI/VT
 if os.name == 'nt':
     os.system('')
 if hasattr(sys.stdout, 'reconfigure'):
@@ -44,7 +58,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# 2. Configuración de Logging a bot.log (para mantener consola limpia)
+# 2. Configuración de Logging a bot.log (para mantener la consola limpia)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -53,7 +67,7 @@ logging.basicConfig(
     ]
 )
 
-# 3. Cargar variables de entorno (.envprivado para API Keys, .envpublico para parámetros)
+# 3. Cargar variables de entorno (.envprivado y .envpublico)
 for env_priv in [".envprivado", "envprivado", "envprivado.env"]:
     if os.path.exists(env_priv):
         load_dotenv(env_priv)
@@ -62,7 +76,7 @@ for env_pub in [".envpublico", "envpublico", ".env", "env"]:
     if os.path.exists(env_pub):
         load_dotenv(env_pub)
 
-# 4. Importar biblioteca python-binance evitando conflicto con el nombre local binance.py
+# 4. Importar biblioteca python-binance evitando conflicto con el archivo local binance.py
 import importlib
 local_bin_module = sys.modules.pop('binance', None)
 sys_path_bak = list(sys.path)
@@ -79,27 +93,27 @@ finally:
         sys.modules['binance'] = local_bin_module
 
 
-class BinanceAperturaBot:
+class BinanceRsiVwapBot:
     def __init__(self):
-        # Cargar credenciales API desde .envprivado
+        # Credenciales API desde .envprivado
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
         self.api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
 
-        # Parámetros del Bot desde .envpublico
+        # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
-        self.pivot_type = os.getenv("PIVOT_TYPE", "CLASSIC").upper()
+        self.timeframe = os.getenv("TIMEFRAME", "1m")
+        self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
+        self.rsi_oversold = float(os.getenv("RSI_OVERSOLD", "30.0"))
+        self.rsi_overbought = float(os.getenv("RSI_OVERBOUGHT", "70.0"))
+        self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "3"))
 
-        # Modos de Ejecución
+        # Modos de ejecución
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Filtro Horario
-        self.enable_schedule = os.getenv("ENABLE_SCHEDULE_FILTER", "True").lower() in ("true", "1", "yes")
-        self.schedule_weekdays_only = os.getenv("SCHEDULE_WEEKDAYS_ONLY", "True").lower() in ("true", "1", "yes")
-
-        # Cliente Binance y reglas de mercado
+        # Cliente Binance y reglas de trading
         self.client = None
         self.price_precision = 2
         self.qty_precision = 3
@@ -107,33 +121,32 @@ class BinanceAperturaBot:
         self.tick_size = 0.01
         self.step_size = 0.001
 
-        # Estado de la Posición Activa
+        # Estado de la posición activa
         self.current_position = None  # None, 'LONG', 'SHORT'
-        self.active_bolsa = "NINGUNA"  # 'EURONEXT', 'TOKYO', 'NY'
         self.entry_price = 0.0
         self.position_qty = 0.0
-        self.tp_price = 0.0
-        self.sl_price = 0.0
         self.entry_time = None
         self.simulated_balance = 100.0
 
-        # Métricas de Operación
+        # Métricas de la operación en curso
+        self.max_pnl_pct = 0.0
+        self.min_pnl_pct = 0.0
+
+        # Métricas generales de la sesión
         self.bot_start_time = time.time()
         self.winning_trades = 0
         self.losing_trades = 0
         self.money_won = 0.0
         self.money_lost = 0.0
-        self.max_pnl_pct = 0.0
-        self.min_pnl_pct = 0.0
 
-        # Inicialización
-        self._initialize_client()
+        # Inicialización de archivos y cliente
         self._init_trade_log_files()
+        self._initialize_client()
 
     def _init_trade_log_files(self):
-        """DETALLES 2: Inicializar tp.txt y sl.txt con columnas perfectamente alineadas."""
+        """DETALLES 2: Inicializar 2ganadas.txt y 2perdidas.txt con columnas alineadas."""
         header = "Dia        | Hora     | Bolsa    | % Ganancia Max | % Perdida Max | Duracion  \n--------------------------------------------------------------------------------\n"
-        for filename in ["tp.txt", "sl.txt"]:
+        for filename in ["2ganadas.txt", "2perdidas.txt"]:
             if not os.path.exists(filename) or os.path.getsize(filename) == 0:
                 try:
                     with open(filename, "w", encoding="utf-8") as f:
@@ -142,8 +155,8 @@ class BinanceAperturaBot:
                     logging.error(f"Error inicializando {filename}: {e}")
 
     def _initialize_client(self):
-        """Inicializa cliente Binance, configura margen AISLADO 10x y cierra posiciones abiertas iniciales."""
-        logging.info("Inicializando Bot de Trading Binance - Estrategia Apertura...")
+        """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones abiertas iniciales."""
+        logging.info("Iniciando Bot Binance RSI + VWAP (24/7)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -159,9 +172,9 @@ class BinanceAperturaBot:
 
             if not self.dry_run and self.api_key and self.api_secret:
                 self._setup_futures_account()
-                logging.info("Conexión autenticada exitosamente a Binance Futures API.")
+                logging.info("Conexión autenticada exitosamente a Binance Futures API con dinero real.")
             else:
-                logging.info("Modo de simulación (DRY-RUN) activo.")
+                logging.info("Modo de simulación (DRY-RUN) activo o sin API keys.")
 
             # DETALLES 1: Cerrar posiciones abiertas al iniciar bot
             self.close_existing_positions()
@@ -176,9 +189,9 @@ class BinanceAperturaBot:
         """Obtiene precisión de precio y cantidad para el símbolo."""
         try:
             info = self.client.futures_exchange_info()
-            for s in info['symbols']:
+            for s in info.get('symbols', []):
                 if s['symbol'] == self.symbol:
-                    for f in s['filters']:
+                    for f in s.get('filters', []):
                         if f['filterType'] == 'PRICE_FILTER':
                             self.tick_size = float(f['tickSize'])
                             self.price_precision = self._precision_from_step(f['tickSize'])
@@ -188,7 +201,7 @@ class BinanceAperturaBot:
                             self.qty_precision = self._precision_from_step(f['stepSize'])
                     break
         except Exception as e:
-            logging.warning(f"No se pudieron obtener precisiones dinámicas ({e}). Usando por defecto.")
+            logging.warning(f"No se pudieron obtener precisiones dinámicas ({e}). Usando valores por defecto.")
 
     @staticmethod
     def _precision_from_step(step_str):
@@ -257,7 +270,7 @@ class BinanceAperturaBot:
                     qty = self._format_quantity(abs(amt))
                     pos_type = 'LONG' if amt > 0 else 'SHORT'
                     logging.info(f"Posición previa detectada ({pos_type} {qty} {self.symbol}). Cerrando a MARKET...")
-                    
+
                     self.client.futures_create_order(
                         symbol=self.symbol,
                         side=side_to_close,
@@ -281,214 +294,138 @@ class BinanceAperturaBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
-    def fetch_klines(self, timeframe='1m', limit=300):
-        """Obtiene klines OHLCV desde Binance Futures."""
+    def fetch_klines(self, limit=300):
+        """Obtiene klines OHLCV de 1 minuto desde Binance Futures."""
         try:
-            klines = self.client.futures_klines(symbol=self.symbol, interval=timeframe, limit=limit)
+            klines = self.client.futures_klines(symbol=self.symbol, interval=self.timeframe, limit=limit)
             df = pd.DataFrame(klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
                 'close_time', 'quote_asset_volume', 'number_of_trades',
                 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
             ])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
             for col in ['open', 'high', 'low', 'close', 'volume']:
                 df[col] = df[col].astype(float)
             return df
         except Exception as e:
-            logging.error(f"Error al obtener klines ({timeframe}): {e}")
+            logging.error(f"Error al obtener klines ({self.timeframe}): {e}")
             return None
 
-    def is_exchange_active_day(self, bolsa_name, now_ba):
+    def calculate_rsi(self, df, period=14):
+        """Calcula el Relative Strength Index (RSI) con suavizado clásico de Wilder."""
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+
+        # Suavizado exponencial estilo Wilder (com=period-1 es equivalente a alpha=1/period)
+        avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
+        avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
+
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        rsi = 100.0 - (100.0 / (1.0 + rs))
+        rsi = rsi.fillna(50.0)
+        return rsi
+
+    def calculate_vwap(self, df):
         """
-        Verifica si la bolsa correspondiente opera en el día actual (Días hábiles):
-        - NY: Lunes a Viernes 10:30 a 17:00 ART (Días hábiles EE.UU.)
-        - Euronext: Lunes a Viernes 04:00 a 12:30 ART (Días hábiles Europa)
-        - Tokio: Domingo 21:00 ART a Viernes 03:00 ART (Lunes a Viernes JST Japón)
+        Calcula el Volume Weighted Average Price (VWAP) intradía acumulado por sesión (día UTC).
+        VWAP = sum(Typical Price * Volume) / sum(Volume)
+        donde Typical Price = (High + Low + Close) / 3
         """
-        weekday = now_ba.weekday()  # 0=Mon, 1=Tue, ..., 4=Fri, 5=Sat, 6=Sun
-        t_now = now_ba.time()
+        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
+        df['pv'] = df['typical_price'] * df['volume']
+        df['date'] = df['timestamp'].dt.date
 
-        if bolsa_name == 'Euronext':
-            return (0 <= weekday <= 4) and (dtime(4, 0) <= t_now < dtime(12, 30))
-        elif bolsa_name == 'NY':
-            return (0 <= weekday <= 4) and (dtime(10, 30) <= t_now < dtime(17, 0))
-        elif bolsa_name == 'Tokio':
-            if t_now >= dtime(21, 0):
-                return weekday in (6, 0, 1, 2, 3)
-            elif t_now < dtime(3, 0):
-                return weekday in (0, 1, 2, 3, 4)
-            return False
-        return False
+        # Acumular por cada día
+        df['cum_pv'] = df.groupby('date')['pv'].cumsum()
+        df['cum_vol'] = df.groupby('date')['volume'].cumsum()
 
-    def is_market_open_and_session(self):
+        vwap = df['cum_pv'] / df['cum_vol'].replace(0, np.nan)
+        return vwap.bfill().ffill()
+
+    def analyze_strategy_rsi_vwap(self):
         """
-        Verifica el horario y días hábiles de operación para las bolsas (Buenos Aires UTC-3).
-        1) Euronext: Lunes a Viernes 04:00 a 12:30 hs ART
-        2) Tokio: Domingo 21:00 a Viernes 03:00 hs ART (Lunes a Viernes JST)
-        3) New York: Lunes a Viernes 10:30 a 17:00 hs ART
+        Estrategia: RSI + VWAP en velas de 1 min (24/7)
+        - RSI < 30: zona de sobreventa
+        - RSI > 70: zona de sobrecompra
+        - Entrada LONG: RSI en sobreventa (< 30) y precio cruza hacia arriba al VWAP en velas de 1m.
+        - Cierre LONG: cuando el precio cruza hacia abajo el VWAP en velas de 1m.
+        - Entrada SHORT: RSI en sobrecompra (> 70) y precio cruza hacia abajo al VWAP en velas de 1m.
+        - Cierre SHORT: cuando el precio cruza hacia arriba el VWAP en velas de 1m.
+        - No colocar SL.
         """
-        if not self.enable_schedule:
-            return True, "TODAS (Filtro Desactivado)"
-
-        ba_tz = timezone(timedelta(hours=-3))
-        now_ba = datetime.now(ba_tz)
-
-        active_sessions = []
-        if self.is_exchange_active_day('Euronext', now_ba):
-            active_sessions.append("Euronext [04:00-12:30]")
-        if self.is_exchange_active_day('Tokio', now_ba):
-            active_sessions.append("Tokio [21:00-03:00]")
-        if self.is_exchange_active_day('NY', now_ba):
-            active_sessions.append("NY [10:30-17:00]")
-
-        if active_sessions:
-            return True, " / ".join(active_sessions)
-        else:
-            return False, "CERRADO (Fuera de Días Hábiles o Horario de Bolsas)"
-
-    def analyze_strategy_apertura(self):
-        """
-        Estrategia de Apertura:
-        1) Vela de 1 min de apertura:
-           - New York: 10:30 hs (Horario Buenos Aires)
-           - Tokio: 21:00 hs (Horario Buenos Aires)
-           - Euronext: 04:00 hs (Horario Buenos Aires)
-        2) Soportes y Resistencias calculados para velas de 5 min (S1, S3, R1, R3).
-        3) LONG cuando vela de apertura es ROJA:
-           - Entrada en primer soporte S1
-           - TP en primera resistencia R1
-           - SL en tercer soporte S3
-        4) SHORT cuando vela de apertura es VERDE:
-           - Entrada en primera resistencia R1
-           - TP en primer soporte S1
-           - SL en tercera resistencia R3
-        """
-        ba_tz = timezone(timedelta(hours=-3))
-        now_ba = datetime.now(ba_tz)
-
-        df_1m = self.fetch_klines(timeframe='1m', limit=500)
-        df_5m = self.fetch_klines(timeframe='5m', limit=100)
-
+        df = self.fetch_klines(limit=300)
         default_result = {
-            'bolsa_nombre': 'NINGUNA',
-            'vela_apertura_str': 'ESPERANDO APERTURA',
-            'vela_color': 'NINGUNA',
-            'signal': None,
-            's1': 0.0,
-            's3': 0.0,
-            'r1': 0.0,
-            'r3': 0.0,
-            'current_price': 0.0
+            'strategy_name': 'RSI + VWAP (1m, 24/7)',
+            'current_price': 0.0,
+            'rsi': 50.0,
+            'vwap': 0.0,
+            'entry_signal': None,  # 'LONG', 'SHORT' o None
+            'exit_signal': None,   # 'CLOSE_LONG', 'CLOSE_SHORT' o None
+            'cross_direction': None
         }
 
-        if df_1m is None or df_5m is None or len(df_1m) == 0 or len(df_5m) == 0:
+        if df is None or len(df) < self.rsi_period + 2:
             return default_result
 
-        curr_price = df_1m['close'].iloc[-1]
+        df['rsi'] = self.calculate_rsi(df, period=self.rsi_period)
+        df['vwap'] = self.calculate_vwap(df)
+
+        curr_candle = df.iloc[-1]
+        prev_candle = df.iloc[-2]
+
+        curr_price = float(curr_candle['close'])
+        curr_rsi = float(curr_candle['rsi'])
+        curr_vwap = float(curr_candle['vwap'])
+
+        prev_price = float(prev_candle['close'])
+        prev_vwap = float(prev_candle['vwap'])
+        prev_rsi = float(prev_candle['rsi'])
+
         default_result['current_price'] = curr_price
+        default_result['rsi'] = curr_rsi
+        default_result['vwap'] = curr_vwap
 
-        # Convertir timestamps a Buenos Aires (UTC-3)
-        df_1m['timestamp_ba'] = df_1m['timestamp'].dt.tz_localize('UTC').dt.tz_convert(ba_tz)
-        df_5m['timestamp_ba'] = df_5m['timestamp'].dt.tz_localize('UTC').dt.tz_convert(ba_tz)
+        # Detección de cruce de precio respecto a VWAP
+        # Cruce hacia arriba: antes estaba por debajo o igual al VWAP y ahora está por encima
+        cross_up = (prev_price <= prev_vwap) and (curr_price > curr_vwap)
 
-        # 1. Velas de 1m de apertura de mercado (NY 10:30, Tokio 21:00, Euronext 04:00)
-        openings = [
-            {'bolsa': 'NY', 'hour': 10, 'minute': 30, 'label': 'NY (10:30 1m)'},
-            {'bolsa': 'Tokio', 'hour': 21, 'minute': 0, 'label': 'Tokio (21:00 1m)'},
-            {'bolsa': 'Euronext', 'hour': 4, 'minute': 0, 'label': 'Euronext (04:00 1m)'}
-        ]
+        # Cruce hacia abajo: antes estaba por encima o igual al VWAP y ahora está por debajo
+        cross_down = (prev_price >= prev_vwap) and (curr_price < curr_vwap)
 
-        t_now = now_ba.time()
-        if dtime(10, 30) <= t_now < dtime(17, 0):
-            openings.sort(key=lambda x: 0 if x['bolsa'] == 'NY' else 1)
-        elif t_now >= dtime(21, 0) or t_now < dtime(3, 0):
-            openings.sort(key=lambda x: 0 if x['bolsa'] == 'Tokio' else 1)
-        elif dtime(4, 0) <= t_now < dtime(12, 30):
-            openings.sort(key=lambda x: 0 if x['bolsa'] == 'Euronext' else 1)
+        entry_signal = None
+        exit_signal = None
 
-        active_open_candle = None
-        selected_bolsa = "NINGUNA"
-        selected_label = ""
+        # Condición de sobreventa: se verifica si el RSI actual o de la vela previa estuvo < 30
+        rsi_oversold_condition = (curr_rsi < self.rsi_oversold) or (prev_rsi < self.rsi_oversold)
 
-        for op in openings:
-            candles = df_1m[
-                (df_1m['timestamp_ba'].dt.hour == op['hour']) &
-                (df_1m['timestamp_ba'].dt.minute == op['minute'])
-            ]
-            if len(candles) > 0:
-                active_open_candle = candles.iloc[-1]
-                selected_bolsa = op['bolsa']
-                selected_label = op['label']
-                break
+        # Condición de sobrecompra: se verifica si el RSI actual o de la vela previa estuvo > 70
+        rsi_overbought_condition = (curr_rsi > self.rsi_overbought) or (prev_rsi > self.rsi_overbought)
 
-        if active_open_candle is not None:
-            c_open = active_open_candle['open']
-            c_close = active_open_candle['close']
-            if c_close < c_open:
-                vela_color = "ROJA"
-                vela_apertura_str = f"ROJA [{selected_label}]"
-            else:
-                vela_color = "VERDE"
-                vela_apertura_str = f"VERDE [{selected_label}]"
-        else:
-            vela_color = "NINGUNA"
-            vela_apertura_str = "ESPERANDO APERTURA (04:00, 10:30, 21:00 ART)"
-            selected_bolsa = "GENERAL"
+        # Regla 2: Entrada en LONG
+        if rsi_oversold_condition and cross_up:
+            entry_signal = 'LONG'
 
-        # 2. Cálculo de Soportes y Resistencias para velas de 5 min (S1, S3, R1, R3)
-        high_5m = df_5m['high'].iloc[-2] if len(df_5m) >= 2 else df_5m['high'].max()
-        low_5m = df_5m['low'].iloc[-2] if len(df_5m) >= 2 else df_5m['low'].min()
-        close_5m = df_5m['close'].iloc[-2] if len(df_5m) >= 2 else df_5m['close'].iloc[-1]
+        # Regla 3: Entrada en SHORT
+        elif rsi_overbought_condition and cross_down:
+            entry_signal = 'SHORT'
 
-        if self.pivot_type == "FIBONACCI":
-            swing_high = df_5m['high'].tail(30).max()
-            swing_low = df_5m['low'].tail(30).min()
-            swing_close = df_5m['close'].iloc[-1]
-            pivot = (swing_high + swing_low + swing_close) / 3.0
-            rng = swing_high - swing_low
-            if rng > 0:
-                s1 = pivot - (0.382 * rng)
-                s3 = pivot - (1.000 * rng)
-                r1 = pivot + (0.382 * rng)
-                r3 = pivot + (1.000 * rng)
-            else:
-                s1 = curr_price * 0.998
-                s3 = curr_price * 0.995
-                r1 = curr_price * 1.002
-                r3 = curr_price * 1.005
-        else:
-            # Pivot Points Clásicos en velas de 5 min (por defecto)
-            pivot = (high_5m + low_5m + close_5m) / 3.0
-            s1 = (2.0 * pivot) - high_5m
-            s3 = low_5m - (2.0 * (high_5m - pivot))
-            r1 = (2.0 * pivot) - low_5m
-            r3 = high_5m + (2.0 * (pivot - low_5m))
+        # Señales de salida / cierre de posición:
+        # Cierre de LONG cuando el precio cruza hacia abajo el VWAP
+        if cross_down:
+            exit_signal = 'CLOSE_LONG'
+        # Cierre de SHORT cuando el precio cruza hacia arriba el VWAP
+        if cross_up:
+            exit_signal = 'CLOSE_SHORT'
 
-        # 3. Definir Señal de Entrada según reglas de apertura
-        signal = None
-        if vela_color == "ROJA":
-            # Entrada LONG en primer soporte S1
-            if curr_price <= s1 * 1.0005:
-                signal = "LONG"
-        elif vela_color == "VERDE":
-            # Entrada SHORT en primera resistencia R1
-            if curr_price >= r1 * 0.9995:
-                signal = "SHORT"
+        default_result['entry_signal'] = entry_signal
+        default_result['exit_signal'] = exit_signal
+        default_result['cross_direction'] = 'UP' if cross_up else ('DOWN' if cross_down else 'NONE')
 
-        return {
-            'bolsa_nombre': selected_bolsa,
-            'vela_apertura_str': vela_apertura_str,
-            'vela_color': vela_color,
-            'signal': signal,
-            's1': self._format_price(s1),
-            's3': self._format_price(s3),
-            'r1': self._format_price(r1),
-            'r3': self._format_price(r3),
-            'current_price': curr_price
-        }
+        return default_result
 
     def get_active_position(self):
-        """Consulta la posición actualmente abierta."""
+        """Consulta la posición actualmente abierta en Binance Futures."""
         if self.dry_run:
             return self.current_position, self.entry_price, self.position_qty
 
@@ -506,126 +443,124 @@ class BinanceAperturaBot:
             logging.error(f"Error consultando posiciones activas: {e}")
             return self.current_position, self.entry_price, self.position_qty
 
-    def open_position(self, side, current_price, pivot_data, bolsa_nombre):
-        """
-        Ejecuta apertura de posición:
-        LONG:  Entrada en S1, TP en R1, SL en S3.
-        SHORT: Entrada en R1, TP en S1, SL en R3.
-        """
+    def open_position(self, side, current_price):
+        """Ejecuta apertura de posición LONG o SHORT en Binance Futures a precio MARKET."""
         notional_val = self.margin_usdt * self.leverage
         qty = self._format_quantity(notional_val / current_price)
 
-        if side == 'LONG':
-            tp_price = pivot_data['r1']
-            sl_price = pivot_data['s3']
-        else:
-            tp_price = pivot_data['s1']
-            sl_price = pivot_data['r3']
-
-        logging.info(f"ENTRADA APERTURA [{bolsa_nombre}]: {side} a ${current_price:.2f} | TP: ${tp_price} | SL: ${sl_price}")
+        logging.info(f"EJECUTANDO ENTRADA {side}: Monto {self.margin_usdt} USDT x {self.leverage}x = {notional_val} USDT ({qty} {self.symbol}) a ~${current_price:.2f}")
 
         if self.dry_run:
             self.current_position = side
-            self.active_bolsa = bolsa_nombre
             self.entry_price = current_price
             self.position_qty = qty
-            self.tp_price = tp_price
-            self.sl_price = sl_price
             self.entry_time = datetime.now()
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
             return True
 
         try:
-            # Cancelar órdenes pendientes previas
+            # Cancelar cualquier orden residual antes de abrir
             try:
                 self.client.futures_cancel_all_open_orders(symbol=self.symbol)
-                self.client._request_futures_api("delete", "algoOpenOrders", signed=True, data={"symbol": self.symbol})
             except Exception:
                 pass
 
             order_side = 'BUY' if side == 'LONG' else 'SELL'
-            self.client.futures_create_order(
+            order = self.client.futures_create_order(
                 symbol=self.symbol,
                 side=order_side,
                 type='MARKET',
                 quantity=qty
             )
+            logging.info(f"Orden de apertura completada: {order.get('orderId')}")
 
             time.sleep(1)
             active_side, real_entry, real_qty = self.get_active_position()
             if real_entry > 0:
                 current_price = real_entry
-
-            exit_side = 'SELL' if side == 'LONG' else 'BUY'
-
-            # Configurar Take Profit condicional
-            try:
-                self.client._request_futures_api(
-                    "post", "algoOrder", signed=True,
-                    data={
-                        'algoType': 'CONDITIONAL',
-                        'symbol': self.symbol,
-                        'side': exit_side,
-                        'type': 'TAKE_PROFIT_MARKET',
-                        'triggerPrice': str(tp_price),
-                        'closePosition': 'true'
-                    }
-                )
-            except Exception as e:
-                logging.error(f"Error creando orden TP: {e}")
-
-            # Configurar Stop Loss condicional
-            try:
-                self.client._request_futures_api(
-                    "post", "algoOrder", signed=True,
-                    data={
-                        'algoType': 'CONDITIONAL',
-                        'symbol': self.symbol,
-                        'side': exit_side,
-                        'type': 'STOP_MARKET',
-                        'triggerPrice': str(sl_price),
-                        'closePosition': 'true'
-                    }
-                )
-            except Exception as e:
-                logging.error(f"Error creando orden SL: {e}")
+                qty = real_qty
 
             self.current_position = side
-            self.active_bolsa = bolsa_nombre
             self.entry_price = current_price
             self.position_qty = qty
-            self.tp_price = tp_price
-            self.sl_price = sl_price
             self.entry_time = datetime.now()
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
             return True
 
         except Exception as e:
-            logging.error(f"Error al ejecutar orden en Binance Futures: {e}")
+            logging.error(f"Error al abrir posición en Binance Futures: {e}")
             return False
 
-    def _record_trade_result(self, pnl):
+    def close_position(self, current_price, reason="SEÑAL VWAP"):
+        """Cierra la posición actual a mercado sin SL y registra en 2ganadas.txt o 2perdidas.txt."""
+        if not self.current_position:
+            return
+
+        side = self.current_position
+        logging.info(f"CERRANDO POSICION {side} por {reason} a ~${current_price:.2f}...")
+
+        exit_time = datetime.now()
+        dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
+
+        if not self.dry_run and self.client:
+            try:
+                side_to_close = 'SELL' if side == 'LONG' else 'BUY'
+                qty = self._format_quantity(self.position_qty)
+                self.client.futures_create_order(
+                    symbol=self.symbol,
+                    side=side_to_close,
+                    type='MARKET',
+                    quantity=qty,
+                    reduceOnly=True
+                )
+                logging.info(f"Orden MARKET de cierre de {side} ejecutada.")
+            except Exception as e:
+                logging.error(f"Error enviando orden de cierre a Binance: {e}")
+
+        # Calcular PnL de la operación
+        if side == 'LONG':
+            pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
+            pnl_usdt = self.margin_usdt * (pnl_pct / 100.0)
+        else:
+            pnl_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
+            pnl_usdt = self.margin_usdt * (pnl_pct / 100.0)
+
+        if self.dry_run:
+            self.simulated_balance += pnl_usdt
+
+        # Actualizar estadísticas y registrar en archivo correspondiente
+        self._record_and_save_trade(pnl_usdt, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
+
+        # Resetear estado de posición
+        self.current_position = None
+        self.entry_price = 0.0
+        self.position_qty = 0.0
+        self.entry_time = None
+        self.max_pnl_pct = 0.0
+        self.min_pnl_pct = 0.0
+
+    def _record_and_save_trade(self, pnl, max_gain_pct, max_loss_pct, dur_mins, exit_time):
+        """
+        DETALLES 2:
+        - 2ganadas.txt para operaciones con ganancia (pnl > 0).
+        - 2perdidas.txt para operaciones con pérdida (pnl <= 0).
+        Columnas alineadas:
+        dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
+        """
         if pnl > 0:
             self.winning_trades += 1
             self.money_won += pnl
-        elif pnl < 0:
+            filename = "2ganadas.txt"
+        else:
             self.losing_trades += 1
             self.money_lost += abs(pnl)
-
-    def _save_trade_to_file(self, exit_type, max_gain_pct, max_loss_pct, dur_mins, exit_time=None):
-        """
-        DETALLES 2: Guardar en tp.txt o sl.txt con columnas alineadas:
-        dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
-        """
-        filename = "tp.txt" if exit_type.lower() == "tp" else "sl.txt"
-        if exit_time is None:
-            exit_time = datetime.now()
+            filename = "2perdidas.txt"
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
-        bolsa_str = self.active_bolsa if self.active_bolsa else "GENERAL"
+        bolsa_str = "BINANCE"
 
         gain_str = f"+{max_gain_pct:.2f}%"
         loss_str = f"{max_loss_pct:.2f}%"
@@ -640,57 +575,23 @@ class BinanceAperturaBot:
         except Exception as e:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
-    def check_simulated_exit(self, current_price):
-        """Evalúa TP y SL en modo simulación."""
-        if not self.dry_run or not self.current_position:
-            return
-
-        pos = self.current_position
-        tp = self.tp_price
-        sl = self.sl_price
-
-        hit_tp = (pos == 'LONG' and current_price >= tp) or (pos == 'SHORT' and current_price <= tp)
-        hit_sl = (pos == 'LONG' and current_price <= sl) or (pos == 'SHORT' and current_price >= sl)
-
-        if hit_tp or hit_sl:
-            exit_time = datetime.now()
-            dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-
-            if hit_tp:
-                pnl = self.margin_usdt * ((abs(tp - self.entry_price) / self.entry_price) * self.leverage)
-                self.simulated_balance += pnl
-                self._record_trade_result(pnl)
-                self._save_trade_to_file("tp", self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
-            elif hit_sl:
-                pnl = -self.margin_usdt * ((abs(sl - self.entry_price) / self.entry_price) * self.leverage)
-                self.simulated_balance += pnl
-                self._record_trade_result(pnl)
-                self._save_trade_to_file("sl", self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
-
-            self.current_position = None
-            self.active_bolsa = "NINGUNA"
-            self.entry_time = None
-            self.max_pnl_pct = 0.0
-            self.min_pnl_pct = 0.0
-
-    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins, schedule_ok, schedule_reason):
+    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins):
         """
-        DETALLES 3 & PUNTO 5:
+        DETALLES 3:
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla únicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
-        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos.
-
-        Formato del estado actual (4 líneas debajo de la cabecera):
-        1) nombre de estrategia
-        2) precio, vela apertura
-        3) horario
-        4) posicion
+        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos (\033[H).
+        - El formato del estado actual para estrategia:
+          en una linea: nombre de estrategia
+          en otra linea: precio
+          en otra linea: horario
+          en otra linea: posicion
         """
-        # 1. Reposicionar el cursor al inicio de la pantalla antes de actualizar (sin borrar por completo)
+        # Reposicionar el cursor al inicio de la pantalla (evita parpadeos de borrado completo)
         sys.stdout.write("\033[H")
 
-        # 2. Consultar balance
+        # Consultar balance
         if self.dry_run:
             wallet_bal = self.simulated_balance
             avail_bal = self.simulated_balance
@@ -710,82 +611,76 @@ class BinanceAperturaBot:
 
         uptime_hours = (time.time() - self.bot_start_time) / 3600.0
 
-        # Formato de la posición
+        # Formato de la posición actual
         if active_pos:
             dur_str = f" ({dur_mins:.1f}m)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
-            pos_str = f"{active_pos} @ ${entry:.2f} [TP: ${self.tp_price:.2f}, SL: ${self.sl_price:.2f}] [{pnl_sign}{pnl_pct:.2f}% ROI]{dur_str}"
+            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | Sin SL (Cierre por cruce VWAP)"
         else:
-            pos_str = "SIN POSICION"
+            pos_line_str = "SIN POSICION"
 
-        # Construcción del texto en consola (Monocromo, sin secuencias ANSI)
+        curr_price_str = f"${strat_data['current_price']:.2f}"
+        rsi_val_str = f"{strat_data['rsi']:.2f}"
+        vwap_val_str = f"${strat_data['vwap']:.2f}"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        # Construcción del texto monocromo (sin códigos de colores ANSI)
         lines = []
         lines.append("======================================================================")
-        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - MONITOREO REAL")
+        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA RSI + VWAP")
         lines.append("======================================================================")
         lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
-        lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL API (Binance Futures)'}")
+        lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL (Dinero Real en Binance Futures)'}")
         lines.append("----------------------------------------------------------------------")
         if has_keys:
             lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
         else:
             lines.append(f"Saldo Wallet (Simulado): {wallet_bal:.2f} USDT")
-        lines.append(f"Resumen General: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
+        lines.append(f"Resumen: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 
-        # Exactamente 4 líneas para el estado actual de la estrategia:
-        # Línea 1: nombre de estrategia
-        # Línea 2: precio, vela apertura
-        # Línea 3: horario
-        # Línea 4: posicion
-        lines.append("Estrategia: Apertura de Mercado (NY 10:30 / Tokio 21:00 / Euronext 04:00 ART)")
-        lines.append(f"Precio: ${strat_data['current_price']:.2f} | Vela Apertura: {strat_data['vela_apertura_str']}")
-        lines.append(f"Horario: {schedule_reason}")
-        lines.append(f"Posicion: {pos_str}")
+        # Formato del estado actual para estrategia (4 líneas exactas):
+        # en una linea: nombre de estrategia
+        # en otra linea: precio
+        # en otra linea: horario
+        # en otra linea: posicion
+        lines.append("nombre de estrategia: RSI + VWAP (1m)")
+        lines.append(f"precio: {curr_price_str} | RSI(14): {rsi_val_str} | VWAP: {vwap_val_str}")
+        lines.append(f"horario: Operacion 24/7 continua | Fecha y Hora: {now_str}")
+        lines.append(f"posicion: {pos_line_str}")
         lines.append("======================================================================")
 
+        # Borrar hasta el final de cada línea (\033[K) y de la pantalla (\033[J) para actualización limpia
         rendered_output = "\n".join(line + "\033[K" for line in lines) + "\033[J\n"
         sys.stdout.write(rendered_output)
         sys.stdout.flush()
 
     def run(self):
-        """Bucle principal de ejecución del bot."""
-        logging.info("Iniciando monitoreo de Estrategia de Apertura...")
+        """Bucle principal de ejecución 24/7 del bot."""
+        logging.info("Bucle principal de monitoreo RSI + VWAP iniciado.")
 
         while True:
             try:
-                # 1. Analizar estrategia de apertura
-                strat_data = self.analyze_strategy_apertura()
+                # 1. Analizar estrategia RSI + VWAP
+                strat_data = self.analyze_strategy_rsi_vwap()
                 curr_price = strat_data['current_price']
 
                 if curr_price == 0.0:
-                    time.sleep(5)
+                    time.sleep(self.poll_interval)
                     continue
 
                 # 2. Consultar posición activa
                 active_pos, entry, qty = self.get_active_position()
 
-                if self.dry_run and active_pos:
-                    self.check_simulated_exit(curr_price)
-                    active_pos, entry, qty = self.get_active_position()
-                elif not self.dry_run and active_pos is None and self.current_position:
-                    # Cierre real detectado
+                # Si no está en dry_run pero externamente se cerró la posición
+                if not self.dry_run and active_pos is None and self.current_position is not None:
                     exit_time = datetime.now()
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-
-                    try:
-                        self.client.futures_cancel_all_open_orders(symbol=self.symbol)
-                        self.client._request_futures_api("delete", "algoOpenOrders", signed=True, data={"symbol": self.symbol})
-                    except Exception:
-                        pass
-
                     pnl = (curr_price - self.entry_price) * self.position_qty if self.current_position == 'LONG' else (self.entry_price - curr_price) * self.position_qty
-                    target_type = "tp" if pnl >= 0 else "sl"
-                    self._save_trade_to_file(target_type, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
-                    self._record_trade_result(pnl)
-
+                    self._record_and_save_trade(pnl, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
                     self.current_position = None
-                    self.active_bolsa = "NINGUNA"
+                    self.entry_price = 0.0
+                    self.position_qty = 0.0
                     self.entry_time = None
                     self.max_pnl_pct = 0.0
                     self.min_pnl_pct = 0.0
@@ -804,40 +699,40 @@ class BinanceAperturaBot:
                     if pnl_pct < self.min_pnl_pct:
                         self.min_pnl_pct = pnl_pct
 
-                # 3. Validar horario de operación
-                schedule_ok, schedule_reason = self.is_market_open_and_session()
-
-                # 4. Renderizar pantalla monocromática con cabecera y estado actual
+                # 3. Renderizar pantalla monocroma con cabecera y estado actual
                 self.render_screen(
                     strat_data=strat_data,
                     active_pos=active_pos,
                     entry=entry,
                     qty=qty,
                     pnl_pct=pnl_pct,
-                    dur_mins=dur_mins,
-                    schedule_ok=schedule_ok,
-                    schedule_reason=schedule_reason
+                    dur_mins=dur_mins
                 )
 
-                # 5. Abrir posición si no hay ninguna activa y el horario es válido
-                if active_pos is None and schedule_ok and strat_data['signal']:
-                    self.open_position(
-                        side=strat_data['signal'],
-                        current_price=curr_price,
-                        pivot_data=strat_data,
-                        bolsa_nombre=strat_data['bolsa_nombre']
-                    )
+                # 4. Lógica de salidas (cerrar operación por cruce de VWAP, sin SL)
+                if active_pos == 'LONG' and strat_data['exit_signal'] == 'CLOSE_LONG':
+                    self.close_position(curr_price, reason="Precio cruzó hacia abajo el VWAP")
+                    active_pos = None
 
-                time.sleep(5)
+                elif active_pos == 'SHORT' and strat_data['exit_signal'] == 'CLOSE_SHORT':
+                    self.close_position(curr_price, reason="Precio cruzó hacia arriba el VWAP")
+                    active_pos = None
+
+                # 5. Lógica de entradas (si no hay posición activa)
+                if active_pos is None and strat_data['entry_signal']:
+                    signal = strat_data['entry_signal']
+                    self.open_position(side=signal, current_price=curr_price)
+
+                time.sleep(self.poll_interval)
 
             except KeyboardInterrupt:
-                print("\n[!] Bot detenido por el usuario. Exiting...")
+                print("\n[!] Bot detenido por el usuario.")
                 break
             except Exception as e:
                 logging.error(f"Excepción en el bucle principal: {e}")
-                time.sleep(5)
+                time.sleep(self.poll_interval)
 
 
 if __name__ == "__main__":
-    bot = BinanceAperturaBot()
+    bot = BinanceRsiVwapBot()
     bot.run()
