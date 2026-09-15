@@ -11,14 +11,13 @@ Configuración:
 
 Estrategia: RSI + VWAP
 1) Operar 24 hs los 7 días de la semana
-2) Entrada en LONG: cuando el RSI está en zona de sobreventa por debajo de 30 en velas de 1 min
-   y el precio cruza hacia arriba al VWAP en velas de 1 min.
-   Cerrar operación cuando el precio cruza hacia abajo el VWAP en velas de 1 min.
-   No colocar SL.
-3) Entrada en SHORT: cuando el RSI está en zona de sobrecompra por arriba de 70 en velas de 1 min
-   y el precio cruza hacia abajo al VWAP en velas de 1 min.
-   Cerrar operación cuando el precio cruza hacia arriba el VWAP en velas de 1 min.
-   No colocar SL.
+2) Hacer una sola entrada a la vez, no hacer varias entradas en simultáneo
+3) Entrada en LONG: cuando el RSI está en zona de sobreventa por debajo de 30 en velas de 1 min y el precio es mayor al VWAP en velas de 1 min
+   Cerrar operación cuando el precio es menor al VWAP en velas de 1 min y está fuera de zona de sobreventa
+   No colocar SL
+4) Entrada en SHORT: cuando el RSI está en zona de sobrecompra por arriba de 70 en velas de 1 min y el precio es menor al VWAP en velas de 1 min
+   Cerrar operación cuando el precio es mayor al VWAP en velas de 1 min y está fuera de zona de sobrecompra
+   No colocar SL
 
 Formato del estado actual para estrategia:
 en una linea: nombre de estrategia
@@ -396,31 +395,35 @@ class BinanceRsiVwapBot:
         entry_signal = None
         exit_signal = None
 
-        # Condición de sobreventa: se verifica si el RSI actual o de la vela previa estuvo < 30
-        rsi_oversold_condition = (curr_rsi < self.rsi_oversold) or (prev_rsi < self.rsi_oversold)
+        # Condición de sobreventa: RSI en zona de sobreventa por debajo de 30 en velas de 1 min
+        rsi_is_oversold = curr_rsi < self.rsi_oversold
 
-        # Condición de sobrecompra: se verifica si el RSI actual o de la vela previa estuvo > 70
-        rsi_overbought_condition = (curr_rsi > self.rsi_overbought) or (prev_rsi > self.rsi_overbought)
+        # Condición de sobrecompra: RSI en zona de sobrecompra por arriba de 70 en velas de 1 min
+        rsi_is_overbought = curr_rsi > self.rsi_overbought
 
-        # Regla 2: Entrada en LONG
-        if rsi_oversold_condition and cross_up:
+        # Regla 3: Entrada en LONG
+        # Cuando el RSI está en zona de sobreventa por debajo de 30 en velas de 1 min y el precio es mayor al VWAP en velas de 1 min
+        if rsi_is_oversold and (curr_price > curr_vwap):
             entry_signal = 'LONG'
 
-        # Regla 3: Entrada en SHORT
-        elif rsi_overbought_condition and cross_down:
+        # Regla 4: Entrada en SHORT
+        # Cuando el RSI está en zona de sobrecompra por arriba de 70 en velas de 1 min y el precio es menor al VWAP en velas de 1 min
+        elif rsi_is_overbought and (curr_price < curr_vwap):
             entry_signal = 'SHORT'
 
-        # Señales de salida / cierre de posición:
-        # Cierre de LONG cuando el precio cruza hacia abajo el VWAP
-        if cross_down:
+        # Reglas de salida / cierre de operación (no colocar SL):
+        # Cerrar operación LONG cuando el precio es menor al VWAP en velas de 1 min y está fuera de zona de sobreventa (RSI >= 30)
+        if (curr_price < curr_vwap) and not rsi_is_oversold:
             exit_signal = 'CLOSE_LONG'
-        # Cierre de SHORT cuando el precio cruza hacia arriba el VWAP
-        if cross_up:
+
+        # Cerrar operación SHORT cuando el precio es mayor al VWAP en velas de 1 min y está fuera de zona de sobrecompra (RSI <= 70)
+        if (curr_price > curr_vwap) and not rsi_is_overbought:
             exit_signal = 'CLOSE_SHORT'
 
         default_result['entry_signal'] = entry_signal
         default_result['exit_signal'] = exit_signal
-        default_result['cross_direction'] = 'UP' if cross_up else ('DOWN' if cross_down else 'NONE')
+        default_result['is_oversold'] = rsi_is_oversold
+        default_result['is_overbought'] = rsi_is_overbought
 
         return default_result
 
