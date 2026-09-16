@@ -4,11 +4,8 @@ MARGIN_USDT=5.0
 LEVERAGE=10
 MARGIN_TYPE=ISOLATED
 
-# Estrategia: RSI + VWAP (Velas de 1 minuto, Operación 24/7)
-TIMEFRAME=1m
-RSI_PERIOD=14
-RSI_OVERSOLD=30.0
-RSI_OVERBOUGHT=70.0
+# Estrategia: VWAP (Velas de 1 hora, Operación 24/7)
+TIMEFRAME=1h
 
 # Operación 24 hs los 7 días de la semana
 OPERATE_24_7=True

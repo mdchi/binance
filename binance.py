@@ -3,23 +3,21 @@
 """
 Bot de trading automatico en Binance.com (USDT-M Futures)
 
-Configuración:
-- Modo Aislado (ISOLATED)
-- Apalancamiento 10x
-- Monto 5 USDT por operación
-- Operaciones con dinero real habilitadas (DRY_RUN=False por defecto)
+Modo Aislado
+Apalancamiento 10x 
+Monto 5 usdt
 
-Estrategia: RSI + VWAP
-1) Operar 24 hs los 7 días de la semana
-2) Hacer una sola entrada a la vez, no hacer varias entradas en simultáneo
-3) Entrada en LONG: cuando el RSI está en zona de sobreventa por debajo de 30 en velas de 1 min y el precio es mayor al VWAP en velas de 1 min
-   Cerrar operación cuando el precio es menor al VWAP en velas de 1 min y está fuera de zona de sobreventa
-   No colocar SL
-4) Entrada en SHORT: cuando el RSI está en zona de sobrecompra por arriba de 70 en velas de 1 min y el precio es menor al VWAP en velas de 1 min
-   Cerrar operación cuando el precio es mayor al VWAP en velas de 1 min y está fuera de zona de sobrecompra
-   No colocar SL
+Estrategia: VWAP
+1) operar 24 hs los 7 dias de la semana
+2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+3) entrada en long: cuando el precio es mayor al VWAP en velas de 1 hora
+   cerrar operacion cuando el precio es menor al VWAP en velas de 1 hora
+   no colocar SL
+4) entrada en short: cuando el precio es menor al VWAP en velas de 1 hora
+   cerrar operacion cuando el precio es mayor al VWAP en velas de 1 hora
+   no colocar SL
 
-Formato del estado actual para estrategia:
+El formato del estado actual para estrategia:
 en una linea: nombre de estrategia
 en otra linea: precio
 en otra linea: horario
@@ -27,15 +25,18 @@ en otra linea: posicion
 
 Detalles:
 1) Cerrar posiciones abiertas al iniciar bot
-2) Crear archivos 2ganadas.txt y 2perdidas.txt con columnas alineadas:
-   dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
+
+2) hacer archivo 2ganadas.txt donde van las operaciones que se ganaron y archivo 2perdidas.txt donde van las opereciones que se perdieron, con columnas alineadas, con los datos:
+dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
+
 3) Mantener cabecera siempre visible en pantalla.
-   Mantener visible en pantalla únicamente el estado actual.
-   No utilizar colores en todo el texto visualizado en pantalla.
-   Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos en vez de borrar la pantalla por completo.
-   Hacer operaciones con dinero real.
-4) .envprivado con la configuración de API de Binance
-   .envpublico con el resto de parámetros
+Mantener visible en pantalla unicamente el estado actual.
+No utilizar colores en todo el texto visualizado en pantalla.
+Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualizacion de datos en vez de borrar la pantalla por completo.
+Hacer operaciones con dinero real.
+
+4) .envprivado con la configuracion de api de binance 
+   .envpublico con el resto de parametros
 """
 
 import os
@@ -43,7 +44,7 @@ import sys
 import time
 import math
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -92,7 +93,7 @@ finally:
         sys.modules['binance'] = local_bin_module
 
 
-class BinanceRsiVwapBot:
+class BinanceVwapBot:
     def __init__(self):
         # Credenciales API desde .envprivado
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
@@ -102,10 +103,7 @@ class BinanceRsiVwapBot:
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
-        self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.rsi_period = int(os.getenv("RSI_PERIOD", "14"))
-        self.rsi_oversold = float(os.getenv("RSI_OVERSOLD", "30.0"))
-        self.rsi_overbought = float(os.getenv("RSI_OVERBOUGHT", "70.0"))
+        self.timeframe = os.getenv("TIMEFRAME", "1h")
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "3"))
 
         # Modos de ejecución
@@ -155,7 +153,7 @@ class BinanceRsiVwapBot:
 
     def _initialize_client(self):
         """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones abiertas iniciales."""
-        logging.info("Iniciando Bot Binance RSI + VWAP (24/7)...")
+        logging.info("Iniciando Bot Binance VWAP (24/7)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -293,8 +291,8 @@ class BinanceRsiVwapBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
-    def fetch_klines(self, limit=300):
-        """Obtiene klines OHLCV de 1 minuto desde Binance Futures."""
+    def fetch_klines(self, limit=200):
+        """Obtiene klines OHLCV en velas de 1 hora (1h) desde Binance Futures."""
         try:
             klines = self.client.futures_klines(symbol=self.symbol, interval=self.timeframe, limit=limit)
             df = pd.DataFrame(klines, columns=[
@@ -310,24 +308,9 @@ class BinanceRsiVwapBot:
             logging.error(f"Error al obtener klines ({self.timeframe}): {e}")
             return None
 
-    def calculate_rsi(self, df, period=14):
-        """Calcula el Relative Strength Index (RSI) con suavizado clásico de Wilder."""
-        delta = df['close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-
-        # Suavizado exponencial estilo Wilder (com=period-1 es equivalente a alpha=1/period)
-        avg_gain = gain.ewm(com=period - 1, min_periods=period).mean()
-        avg_loss = loss.ewm(com=period - 1, min_periods=period).mean()
-
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        rsi = 100.0 - (100.0 / (1.0 + rs))
-        rsi = rsi.fillna(50.0)
-        return rsi
-
     def calculate_vwap(self, df):
         """
-        Calcula el Volume Weighted Average Price (VWAP) intradía acumulado por sesión (día UTC).
+        Calcula el Volume Weighted Average Price (VWAP) en velas de 1 hora acumulado por día UTC.
         VWAP = sum(Typical Price * Volume) / sum(Volume)
         donde Typical Price = (High + Low + Close) / 3
         """
@@ -335,95 +318,60 @@ class BinanceRsiVwapBot:
         df['pv'] = df['typical_price'] * df['volume']
         df['date'] = df['timestamp'].dt.date
 
-        # Acumular por cada día
+        # Acumular por cada día UTC
         df['cum_pv'] = df.groupby('date')['pv'].cumsum()
         df['cum_vol'] = df.groupby('date')['volume'].cumsum()
 
         vwap = df['cum_pv'] / df['cum_vol'].replace(0, np.nan)
         return vwap.bfill().ffill()
 
-    def analyze_strategy_rsi_vwap(self):
+    def analyze_strategy_vwap(self):
         """
-        Estrategia: RSI + VWAP en velas de 1 min (24/7)
-        - RSI < 30: zona de sobreventa
-        - RSI > 70: zona de sobrecompra
-        - Entrada LONG: RSI en sobreventa (< 30) y precio cruza hacia arriba al VWAP en velas de 1m.
-        - Cierre LONG: cuando el precio cruza hacia abajo el VWAP en velas de 1m.
-        - Entrada SHORT: RSI en sobrecompra (> 70) y precio cruza hacia abajo al VWAP en velas de 1m.
-        - Cierre SHORT: cuando el precio cruza hacia arriba el VWAP en velas de 1m.
-        - No colocar SL.
+        Estrategia: VWAP en velas de 1 hora (24/7)
+        - entrada en long: cuando el precio es mayor al VWAP en velas de 1 hora
+          cerrar operacion cuando el precio es menor al VWAP en velas de 1 hora
+          no colocar SL
+        - entrada en short: cuando el precio es menor al VWAP en velas de 1 hora
+          cerrar operacion cuando el precio es mayor al VWAP en velas de 1 hora
+          no colocar SL
         """
-        df = self.fetch_klines(limit=300)
+        df = self.fetch_klines(limit=200)
         default_result = {
-            'strategy_name': 'RSI + VWAP (1m, 24/7)',
+            'strategy_name': 'VWAP',
             'current_price': 0.0,
-            'rsi': 50.0,
             'vwap': 0.0,
             'entry_signal': None,  # 'LONG', 'SHORT' o None
-            'exit_signal': None,   # 'CLOSE_LONG', 'CLOSE_SHORT' o None
-            'cross_direction': None
+            'exit_signal': None    # 'CLOSE_LONG', 'CLOSE_SHORT' o None
         }
 
-        if df is None or len(df) < self.rsi_period + 2:
+        if df is None or len(df) < 5:
             return default_result
 
-        df['rsi'] = self.calculate_rsi(df, period=self.rsi_period)
         df['vwap'] = self.calculate_vwap(df)
 
         curr_candle = df.iloc[-1]
-        prev_candle = df.iloc[-2]
-
         curr_price = float(curr_candle['close'])
-        curr_rsi = float(curr_candle['rsi'])
         curr_vwap = float(curr_candle['vwap'])
 
-        prev_price = float(prev_candle['close'])
-        prev_vwap = float(prev_candle['vwap'])
-        prev_rsi = float(prev_candle['rsi'])
-
         default_result['current_price'] = curr_price
-        default_result['rsi'] = curr_rsi
         default_result['vwap'] = curr_vwap
-
-        # Detección de cruce de precio respecto a VWAP
-        # Cruce hacia arriba: antes estaba por debajo o igual al VWAP y ahora está por encima
-        cross_up = (prev_price <= prev_vwap) and (curr_price > curr_vwap)
-
-        # Cruce hacia abajo: antes estaba por encima o igual al VWAP y ahora está por debajo
-        cross_down = (prev_price >= prev_vwap) and (curr_price < curr_vwap)
 
         entry_signal = None
         exit_signal = None
 
-        # Condición de sobreventa: RSI en zona de sobreventa por debajo de 30 en velas de 1 min
-        rsi_is_oversold = curr_rsi < self.rsi_oversold
-
-        # Condición de sobrecompra: RSI en zona de sobrecompra por arriba de 70 en velas de 1 min
-        rsi_is_overbought = curr_rsi > self.rsi_overbought
-
-        # Regla 3: Entrada en LONG
-        # Cuando el RSI está en zona de sobreventa por debajo de 30 en velas de 1 min y el precio es mayor al VWAP en velas de 1 min
-        if rsi_is_oversold and (curr_price > curr_vwap):
+        # Regla 3: entrada en long cuando el precio es mayor al VWAP en velas de 1 hora
+        #         cerrar operacion cuando el precio es menor al VWAP en velas de 1 hora
+        if curr_price > curr_vwap:
             entry_signal = 'LONG'
-
-        # Regla 4: Entrada en SHORT
-        # Cuando el RSI está en zona de sobrecompra por arriba de 70 en velas de 1 min y el precio es menor al VWAP en velas de 1 min
-        elif rsi_is_overbought and (curr_price < curr_vwap):
-            entry_signal = 'SHORT'
-
-        # Reglas de salida / cierre de operación (no colocar SL):
-        # Cerrar operación LONG cuando el precio es menor al VWAP en velas de 1 min y está fuera de zona de sobreventa (RSI >= 30)
-        if (curr_price < curr_vwap) and not rsi_is_oversold:
-            exit_signal = 'CLOSE_LONG'
-
-        # Cerrar operación SHORT cuando el precio es mayor al VWAP en velas de 1 min y está fuera de zona de sobrecompra (RSI <= 70)
-        if (curr_price > curr_vwap) and not rsi_is_overbought:
             exit_signal = 'CLOSE_SHORT'
+        elif curr_price < curr_vwap:
+            # Regla 4: entrada en short cuando el precio es menor al VWAP en velas de 1 hora
+            #         cerrar operacion cuando el precio es mayor al VWAP en velas de 1 hora
+            entry_signal = 'SHORT'
+            exit_signal = 'CLOSE_LONG'
 
         default_result['entry_signal'] = entry_signal
         default_result['exit_signal'] = exit_signal
-        default_result['is_oversold'] = rsi_is_oversold
-        default_result['is_overbought'] = rsi_is_overbought
 
         return default_result
 
@@ -623,14 +571,13 @@ class BinanceRsiVwapBot:
             pos_line_str = "SIN POSICION"
 
         curr_price_str = f"${strat_data['current_price']:.2f}"
-        rsi_val_str = f"{strat_data['rsi']:.2f}"
         vwap_val_str = f"${strat_data['vwap']:.2f}"
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Construcción del texto monocromo (sin códigos de colores ANSI)
         lines = []
         lines.append("======================================================================")
-        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA RSI + VWAP")
+        lines.append("          BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VWAP")
         lines.append("======================================================================")
         lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
         lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL (Dinero Real en Binance Futures)'}")
@@ -647,8 +594,8 @@ class BinanceRsiVwapBot:
         # en otra linea: precio
         # en otra linea: horario
         # en otra linea: posicion
-        lines.append("nombre de estrategia: RSI + VWAP (1m)")
-        lines.append(f"precio: {curr_price_str} | RSI(14): {rsi_val_str} | VWAP: {vwap_val_str}")
+        lines.append("nombre de estrategia: VWAP (velas 1h)")
+        lines.append(f"precio: {curr_price_str} | VWAP: {vwap_val_str}")
         lines.append(f"horario: Operacion 24/7 continua | Fecha y Hora: {now_str}")
         lines.append(f"posicion: {pos_line_str}")
         lines.append("======================================================================")
@@ -660,12 +607,12 @@ class BinanceRsiVwapBot:
 
     def run(self):
         """Bucle principal de ejecución 24/7 del bot."""
-        logging.info("Bucle principal de monitoreo RSI + VWAP iniciado.")
+        logging.info("Bucle principal de monitoreo VWAP iniciado.")
 
         while True:
             try:
-                # 1. Analizar estrategia RSI + VWAP
-                strat_data = self.analyze_strategy_rsi_vwap()
+                # 1. Analizar estrategia VWAP en velas de 1 hora
+                strat_data = self.analyze_strategy_vwap()
                 curr_price = strat_data['current_price']
 
                 if curr_price == 0.0:
@@ -712,16 +659,16 @@ class BinanceRsiVwapBot:
                     dur_mins=dur_mins
                 )
 
-                # 4. Lógica de salidas (cerrar operación por cruce de VWAP, sin SL)
+                # 4. Lógica de salidas (cerrar operación por VWAP, sin SL)
                 if active_pos == 'LONG' and strat_data['exit_signal'] == 'CLOSE_LONG':
-                    self.close_position(curr_price, reason="Precio cruzó hacia abajo el VWAP")
+                    self.close_position(curr_price, reason="Precio menor al VWAP en velas de 1h")
                     active_pos = None
 
                 elif active_pos == 'SHORT' and strat_data['exit_signal'] == 'CLOSE_SHORT':
-                    self.close_position(curr_price, reason="Precio cruzó hacia arriba el VWAP")
+                    self.close_position(curr_price, reason="Precio mayor al VWAP en velas de 1h")
                     active_pos = None
 
-                # 5. Lógica de entradas (si no hay posición activa)
+                # 5. Lógica de entradas (si no hay posición activa: una sola entrada a la vez)
                 if active_pos is None and strat_data['entry_signal']:
                     signal = strat_data['entry_signal']
                     self.open_position(side=signal, current_price=curr_price)
@@ -737,5 +684,5 @@ class BinanceRsiVwapBot:
 
 
 if __name__ == "__main__":
-    bot = BinanceRsiVwapBot()
+    bot = BinanceVwapBot()
     bot.run()
