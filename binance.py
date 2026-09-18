@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de trading automatico en Binance.com (USDT-M Futures)
+Bot de trading automatico en Binance.com
 
 Modo Aislado
 Apalancamiento 10x 
 Monto 5 usdt
 
-Estrategia: VWAP
+Estrategia: POC y VWAP
 1) operar 24 hs los 7 dias de la semana
 2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-3) entrada en long: cuando el precio es mayor al VWAP en velas de 1 hora
-   cerrar operacion cuando el precio es menor al VWAP en velas de 1 hora
+3) entrada en long: cuando el precio cruza el POC de arriba hacia abajo y el precio es mayor al VWAP en velas de 1 min
+   cerrar operacion cuando el precio es menor al VWAP en velas de 1 min
    no colocar SL
-4) entrada en short: cuando el precio es menor al VWAP en velas de 1 hora
-   cerrar operacion cuando el precio es mayor al VWAP en velas de 1 hora
+4) entrada en short: cuando el precio cruza el POC de abajo hacia arriba y el precio es menor al VWAP en velas de 1 min
+   cerrar operacion cuando el precio es mayor al VWAP en velas de 1 min
    no colocar SL
 
 El formato del estado actual para estrategia:
@@ -58,7 +58,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# 2. Configuración de Logging a bot.log (para mantener la consola limpia)
+# 2. Configuración de Logging a bot.log (para mantener la consola limpia y monocroma)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -93,7 +93,7 @@ finally:
         sys.modules['binance'] = local_bin_module
 
 
-class BinanceVwapBot:
+class BinancePocVwapBot:
     def __init__(self):
         # Credenciales API desde .envprivado
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
@@ -103,14 +103,15 @@ class BinanceVwapBot:
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
         self.leverage = int(os.getenv("LEVERAGE", "10"))
-        self.timeframe = os.getenv("TIMEFRAME", "1h")
-        self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "3"))
+        self.timeframe = os.getenv("TIMEFRAME", "1m")
+        self.poc_window = int(os.getenv("POC_WINDOW_CANDLES", "240"))
+        self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
 
-        # Modos de ejecución
+        # Modos de ejecución (dinero real por defecto o según configuración)
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Cliente Binance y reglas de trading
+        # Cliente Binance y reglas de precisión de trading
         self.client = None
         self.price_precision = 2
         self.qty_precision = 3
@@ -153,7 +154,7 @@ class BinanceVwapBot:
 
     def _initialize_client(self):
         """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones abiertas iniciales."""
-        logging.info("Iniciando Bot Binance VWAP (24/7)...")
+        logging.info("Iniciando Bot Binance POC y VWAP (24/7)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -291,8 +292,8 @@ class BinanceVwapBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
-    def fetch_klines(self, limit=200):
-        """Obtiene klines OHLCV en velas de 1 hora (1h) desde Binance Futures."""
+    def fetch_klines(self, limit=300):
+        """Obtiene klines OHLCV en velas de 1 minuto (1m) desde Binance Futures."""
         try:
             klines = self.client.futures_klines(symbol=self.symbol, interval=self.timeframe, limit=limit)
             df = pd.DataFrame(klines, columns=[
@@ -310,7 +311,7 @@ class BinanceVwapBot:
 
     def calculate_vwap(self, df):
         """
-        Calcula el Volume Weighted Average Price (VWAP) en velas de 1 hora acumulado por día UTC.
+        Calcula el Volume Weighted Average Price (VWAP) acumulado intradiario por día UTC.
         VWAP = sum(Typical Price * Volume) / sum(Volume)
         donde Typical Price = (High + Low + Close) / 3
         """
@@ -325,50 +326,114 @@ class BinanceVwapBot:
         vwap = df['cum_pv'] / df['cum_vol'].replace(0, np.nan)
         return vwap.bfill().ffill()
 
-    def analyze_strategy_vwap(self):
+    def calculate_poc_series(self, df, window=None):
         """
-        Estrategia: VWAP en velas de 1 hora (24/7)
-        - entrada en long: cuando el precio es mayor al VWAP en velas de 1 hora
-          cerrar operacion cuando el precio es menor al VWAP en velas de 1 hora
-          no colocar SL
-        - entrada en short: cuando el precio es menor al VWAP en velas de 1 hora
-          cerrar operacion cuando el precio es mayor al VWAP en velas de 1 hora
-          no colocar SL
+        Calcula el Point of Control (POC) para cada vela basándose en el Perfil de Volumen (Volume Profile).
+        El POC es el nivel de precio donde se negoció el mayor volumen.
+        Para cada vela i, toma las velas precedentes de la ventana (por defecto self.poc_window o la sesión)
+        y divide el rango de precios en bins discretizados basados en tick_size / resolución.
         """
-        df = self.fetch_klines(limit=200)
+        if window is None:
+            window = self.poc_window
+
+        n = len(df)
+        poc_series = np.zeros(n, dtype=float)
+
+        typical = (df['high'] + df['low'] + df['close']) / 3.0
+        volumes = df['volume'].values
+
+        # Determinación adaptativa del tamaño de bin de precio
+        step = max(self.tick_size * 5, 0.5)
+
+        for i in range(n):
+            start_idx = max(0, i - window + 1)
+            window_typical = typical.iloc[start_idx:i+1].values
+            window_vol = volumes[start_idx:i+1]
+
+            if len(window_vol) == 0 or np.sum(window_vol) == 0:
+                poc_series[i] = typical.iloc[i]
+                continue
+
+            # Bins de precio redondeados al step más cercano
+            price_bins = np.round(window_typical / step) * step
+
+            # Sumar volumen por nivel de precio
+            bin_vol_map = {}
+            for p_bin, v in zip(price_bins, window_vol):
+                bin_vol_map[p_bin] = bin_vol_map.get(p_bin, 0.0) + v
+
+            best_price = max(bin_vol_map.items(), key=lambda item: item[1])[0]
+            poc_series[i] = best_price
+
+        return pd.Series(poc_series, index=df.index)
+
+    def analyze_strategy(self):
+        """
+        Estrategia: POC y VWAP en velas de 1 minuto (24/7)
+        1) Operar 24 hs los 7 dias de la semana
+        2) Hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+        3) Entrada en LONG: cuando el precio cruza el POC de arriba hacia abajo y el precio es mayor al VWAP en velas de 1 min
+           Cerrar operacion cuando el precio es menor al VWAP en velas de 1 min
+           No colocar SL
+        4) Entrada en SHORT: cuando el precio cruza el POC de abajo hacia arriba y el precio es menor al VWAP en velas de 1 min
+           Cerrar operacion cuando el precio es mayor al VWAP en velas de 1 min
+           No colocar SL
+        """
+        df = self.fetch_klines(limit=300)
         default_result = {
-            'strategy_name': 'VWAP',
+            'strategy_name': 'POC y VWAP (velas 1m)',
             'current_price': 0.0,
+            'poc': 0.0,
             'vwap': 0.0,
             'entry_signal': None,  # 'LONG', 'SHORT' o None
             'exit_signal': None    # 'CLOSE_LONG', 'CLOSE_SHORT' o None
         }
 
-        if df is None or len(df) < 5:
+        if df is None or len(df) < 10:
             return default_result
 
         df['vwap'] = self.calculate_vwap(df)
+        df['poc'] = self.calculate_poc_series(df, window=self.poc_window)
 
         curr_candle = df.iloc[-1]
+        prev_candle = df.iloc[-2]
+
         curr_price = float(curr_candle['close'])
+        prev_price = float(prev_candle['close'])
+        curr_poc = float(curr_candle['poc'])
+        prev_poc = float(prev_candle['poc'])
         curr_vwap = float(curr_candle['vwap'])
 
         default_result['current_price'] = curr_price
+        default_result['poc'] = curr_poc
         default_result['vwap'] = curr_vwap
 
         entry_signal = None
         exit_signal = None
 
-        # Regla 3: entrada en long cuando el precio es mayor al VWAP en velas de 1 hora
-        #         cerrar operacion cuando el precio es menor al VWAP en velas de 1 hora
-        if curr_price > curr_vwap:
+        # Detección de Cruces de POC:
+        # Cruce de arriba hacia abajo: antes estaba por encima o igual al POC, y ahora está por debajo
+        poc_cross_down = (prev_price >= prev_poc) and (curr_price < curr_poc)
+
+        # Cruce de abajo hacia arriba: antes estaba por debajo o igual al POC, y ahora está por encima
+        poc_cross_up = (prev_price <= prev_poc) and (curr_price > curr_poc)
+
+        # 3) Entrada en long: cuando el precio cruza el POC de arriba hacia abajo y el precio es mayor al VWAP
+        if poc_cross_down and (curr_price > curr_vwap):
             entry_signal = 'LONG'
-            exit_signal = 'CLOSE_SHORT'
-        elif curr_price < curr_vwap:
-            # Regla 4: entrada en short cuando el precio es menor al VWAP en velas de 1 hora
-            #         cerrar operacion cuando el precio es mayor al VWAP en velas de 1 hora
+
+        # 4) Entrada en short: cuando el precio cruza el POC de abajo hacia arriba y el precio es menor al VWAP
+        elif poc_cross_up and (curr_price < curr_vwap):
             entry_signal = 'SHORT'
+
+        # Lógica de cierre de operaciones por condición VWAP:
+        # Cerrar LONG cuando el precio es menor al VWAP en velas de 1 min
+        if curr_price < curr_vwap:
             exit_signal = 'CLOSE_LONG'
+
+        # Cerrar SHORT cuando el precio es mayor al VWAP en velas de 1 min
+        elif curr_price > curr_vwap:
+            exit_signal = 'CLOSE_SHORT'
 
         default_result['entry_signal'] = entry_signal
         default_result['exit_signal'] = exit_signal
@@ -566,18 +631,19 @@ class BinanceVwapBot:
         if active_pos:
             dur_str = f" ({dur_mins:.1f}m)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
-            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | Sin SL (Cierre por cruce VWAP)"
+            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | Sin SL (Cierre por condición VWAP)"
         else:
             pos_line_str = "SIN POSICION"
 
         curr_price_str = f"${strat_data['current_price']:.2f}"
+        poc_val_str = f"${strat_data['poc']:.2f}"
         vwap_val_str = f"${strat_data['vwap']:.2f}"
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         # Construcción del texto monocromo (sin códigos de colores ANSI)
         lines = []
         lines.append("======================================================================")
-        lines.append("          BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VWAP")
+        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA POC Y VWAP")
         lines.append("======================================================================")
         lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
         lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL (Dinero Real en Binance Futures)'}")
@@ -594,8 +660,8 @@ class BinanceVwapBot:
         # en otra linea: precio
         # en otra linea: horario
         # en otra linea: posicion
-        lines.append("nombre de estrategia: VWAP (velas 1h)")
-        lines.append(f"precio: {curr_price_str} | VWAP: {vwap_val_str}")
+        lines.append(f"nombre de estrategia: {strat_data['strategy_name']}")
+        lines.append(f"precio: {curr_price_str} | POC: {poc_val_str} | VWAP: {vwap_val_str}")
         lines.append(f"horario: Operacion 24/7 continua | Fecha y Hora: {now_str}")
         lines.append(f"posicion: {pos_line_str}")
         lines.append("======================================================================")
@@ -607,12 +673,12 @@ class BinanceVwapBot:
 
     def run(self):
         """Bucle principal de ejecución 24/7 del bot."""
-        logging.info("Bucle principal de monitoreo VWAP iniciado.")
+        logging.info("Bucle principal de monitoreo POC y VWAP iniciado.")
 
         while True:
             try:
-                # 1. Analizar estrategia VWAP en velas de 1 hora
-                strat_data = self.analyze_strategy_vwap()
+                # 1. Analizar estrategia POC y VWAP en velas de 1 minuto
+                strat_data = self.analyze_strategy()
                 curr_price = strat_data['current_price']
 
                 if curr_price == 0.0:
@@ -659,13 +725,13 @@ class BinanceVwapBot:
                     dur_mins=dur_mins
                 )
 
-                # 4. Lógica de salidas (cerrar operación por VWAP, sin SL)
+                # 4. Lógica de salidas (cerrar operación cuando condición VWAP se cumpla, sin SL)
                 if active_pos == 'LONG' and strat_data['exit_signal'] == 'CLOSE_LONG':
-                    self.close_position(curr_price, reason="Precio menor al VWAP en velas de 1h")
+                    self.close_position(curr_price, reason="Precio menor al VWAP en velas de 1 min")
                     active_pos = None
 
                 elif active_pos == 'SHORT' and strat_data['exit_signal'] == 'CLOSE_SHORT':
-                    self.close_position(curr_price, reason="Precio mayor al VWAP en velas de 1h")
+                    self.close_position(curr_price, reason="Precio mayor al VWAP en velas de 1 min")
                     active_pos = None
 
                 # 5. Lógica de entradas (si no hay posición activa: una sola entrada a la vez)
@@ -684,5 +750,5 @@ class BinanceVwapBot:
 
 
 if __name__ == "__main__":
-    bot = BinanceVwapBot()
+    bot = BinancePocVwapBot()
     bot.run()

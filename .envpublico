@@ -4,8 +4,12 @@ MARGIN_USDT=5.0
 LEVERAGE=10
 MARGIN_TYPE=ISOLATED
 
-# Estrategia: VWAP (Velas de 1 hora, Operación 24/7)
-TIMEFRAME=1h
+# Estrategia: POC y VWAP (Velas de 1 minuto, Operación 24/7)
+TIMEFRAME=1m
+
+# Ventana de velas para cálculo de POC (Point of Control)
+# 240 velas de 1m = últimas 4 horas de perfil de volumen intradiario (o sesión activa)
+POC_WINDOW_CANDLES=240
 
 # Operación 24 hs los 7 días de la semana
 OPERATE_24_7=True
@@ -14,5 +18,5 @@ OPERATE_24_7=True
 DRY_RUN=False
 USE_TESTNET=False
 
-# Intervalo de actualización en segundos
-POLL_INTERVAL_SEC=3
+# Intervalo de actualización en segundos (2 segundos para velas de 1m)
+POLL_INTERVAL_SEC=2
