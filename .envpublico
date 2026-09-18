@@ -20,3 +20,6 @@ USE_TESTNET=False
 
 # Intervalo de actualización en segundos (2 segundos para velas de 1m)
 POLL_INTERVAL_SEC=2
+
+# Zona POC: límite superior POC + OFFSET y límite inferior POC - OFFSET (Por defecto 40)
+POC_ZONE_OFFSET=40.0
