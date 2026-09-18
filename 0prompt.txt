@@ -4,13 +4,14 @@ Modo Aislado
 Apalancamienot 10x 
 Monto 5 usdt
 
-Estrategia: rsi + vwap
+Estrategia: POC y VWAP
 1) operar 24 hs los 7 dias de la semana
-2) entrada en long: cuando el RSI esta en zona de sobreventa por debajo de 30 en velas de 1 min y el precio cruza hacia arriba al VWAP en velas de 1 min
-   cerrar operacion cuando el precio cruza hacia abajo el VWAP en velas de 1 min
+2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+3) entrada en long: cuando el precio se acerca a la zona del POC desde arriba hacia abajo y el precio es mayor al VWA en velas de 1 min
+   cerrar operacion cuando el precio se aleja de la zona del POC y el precio es menor al VWAP en velas de 1 min
    no colocar SL
-3) entrada en short: cuando el RSI esta en zona de sobrecompra por arriba de 70 en velas de 1 min y el precio cruza hacia abajo al VWAP en velas de 1 min
-   cerrar operacion cuando el precio cruza hacia arriba el VWAP en velas de 1 min
+4) entrada en short: cuando el precio se acerca a la zona del POC desde abajo hacia arriba y el precio es menor al VWA en velas de 1 min
+   cerrar operacion cuando el precio se aleja de la zona del POC y el precio es mayor al VWAP en velas de 1 min
    no colocar SL
 
 El formato del estado actual para estrategia:
@@ -33,10 +34,3 @@ Hacer operaciones con dinero real.
 
 4) .envprivado con la configuracion de api de binance 
    .envpublico con el resto de parametros
-
-
-
-
-
-
-
