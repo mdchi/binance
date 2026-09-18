@@ -9,12 +9,16 @@ Monto 5 usdt
 
 Estrategia: POC y VWAP
 1) operar 24 hs los 7 dias de la semana
-2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-3) entrada en long: cuando el precio cruza el POC de arriba hacia abajo y el precio es mayor al VWAP en velas de 1 min
-   cerrar operacion cuando el precio es menor al VWAP en velas de 1 min
+2) hacer todos los calculos en temporalidad de 1 min
+3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+4) zona POC = limite superior POC+40 y limite inferior POC-40
+   zona POC superior = limite superior POC+40 y limite inferior POC
+   zona POC inferior = limite superior POC    y limite inferior POC-40
+5) entrada en long: cuando el precio esta en zona POC, ha ingresado por zona POC superior y el precio es mayor al VWAP
+   cerrar operacion cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
    no colocar SL
-4) entrada en short: cuando el precio cruza el POC de abajo hacia arriba y el precio es menor al VWAP en velas de 1 min
-   cerrar operacion cuando el precio es mayor al VWAP en velas de 1 min
+6) entrada en short: cuando el precio esta en zona POC, ha ingresado por zona POC inferior y el precio es menor al VWAP
+   cerrar operacion cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
    no colocar SL
 
 El formato del estado actual para estrategia:
@@ -105,6 +109,7 @@ class BinancePocVwapBot:
         self.leverage = int(os.getenv("LEVERAGE", "10"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.poc_window = int(os.getenv("POC_WINDOW_CANDLES", "240"))
+        self.poc_zone_offset = float(os.getenv("POC_ZONE_OFFSET", "40.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
 
         # Modos de ejecución (dinero real por defecto o según configuración)
@@ -125,6 +130,9 @@ class BinancePocVwapBot:
         self.position_qty = 0.0
         self.entry_time = None
         self.simulated_balance = 100.0
+
+        # Seguimiento de transición de precio previo para detección de entrada por zona
+        self.prev_candle_price = None
 
         # Métricas de la operación en curso
         self.max_pnl_pct = 0.0
@@ -369,21 +377,30 @@ class BinancePocVwapBot:
 
     def analyze_strategy(self):
         """
-        Estrategia: POC y VWAP en velas de 1 minuto (24/7)
-        1) Operar 24 hs los 7 dias de la semana
-        2) Hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-        3) Entrada en LONG: cuando el precio cruza el POC de arriba hacia abajo y el precio es mayor al VWAP en velas de 1 min
-           Cerrar operacion cuando el precio es menor al VWAP en velas de 1 min
-           No colocar SL
-        4) Entrada en SHORT: cuando el precio cruza el POC de abajo hacia arriba y el precio es menor al VWAP en velas de 1 min
-           Cerrar operacion cuando el precio es mayor al VWAP en velas de 1 min
-           No colocar SL
+        Estrategia: POC y VWAP en temporalidad de 1 min (24/7)
+        1) operar 24 hs los 7 dias de la semana
+        2) hacer todos los calculos en temporalidad de 1 min
+        3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+        4) zona POC = limite superior POC+40 y limite inferior POC-40
+           zona POC superior = limite superior POC+40 y limite inferior POC
+           zona POC inferior = limite superior POC    y limite inferior POC-40
+        5) entrada en long: cuando el precio esta en zona POC, ha ingresado por zona POC superior y el precio es mayor al VWAP
+           cerrar operacion cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
+           no colocar SL
+        6) entrada en short: cuando el precio esta en zona POC, ha ingresado por zona POC inferior y el precio es menor al VWAP
+           cerrar operacion cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
+           no colocar SL
         """
         df = self.fetch_klines(limit=300)
         default_result = {
-            'strategy_name': 'POC y VWAP (velas 1m)',
+            'strategy_name': 'POC y VWAP',
             'current_price': 0.0,
             'poc': 0.0,
+            'poc_upper': 0.0,
+            'poc_lower': 0.0,
+            'in_poc_zone': False,
+            'in_poc_superior': False,
+            'in_poc_inferior': False,
             'vwap': 0.0,
             'entry_signal': None,  # 'LONG', 'SHORT' o None
             'exit_signal': None    # 'CLOSE_LONG', 'CLOSE_SHORT' o None
@@ -399,40 +416,59 @@ class BinancePocVwapBot:
         prev_candle = df.iloc[-2]
 
         curr_price = float(curr_candle['close'])
-        prev_price = float(prev_candle['close'])
+        prev_price = float(prev_candle['close']) if self.prev_candle_price is None else self.prev_candle_price
         curr_poc = float(curr_candle['poc'])
-        prev_poc = float(prev_candle['poc'])
         curr_vwap = float(curr_candle['vwap'])
+
+        # Límites de la zona POC (40 por defecto)
+        poc_upper = curr_poc + self.poc_zone_offset
+        poc_lower = curr_poc - self.poc_zone_offset
+
+        # 4) zona POC = limite superior POC+40 y limite inferior POC-40
+        #    zona POC superior = limite superior POC+40 y limite inferior POC
+        #    zona POC inferior = limite superior POC    y limite inferior POC-40
+        in_poc_zone = (poc_lower <= curr_price <= poc_upper)
+        in_poc_superior = (curr_poc <= curr_price <= poc_upper)
+        in_poc_inferior = (poc_lower <= curr_price <= curr_poc)
+        outside_poc_zone = (curr_price > poc_upper) or (curr_price < poc_lower)
+
+        # Ha ingresado por zona POC superior:
+        # Previamente estaba por encima de la zona POC (> poc_upper) y ahora se sitúa en la zona POC superior
+        entered_from_superior = (prev_price >= poc_upper) and in_poc_superior
+
+        # Ha ingresado por zona POC inferior:
+        # Previamente estaba por debajo de la zona POC (< poc_lower) y ahora se sitúa en la zona POC inferior
+        entered_from_inferior = (prev_price <= poc_lower) and in_poc_inferior
+
+        # Actualizar precio para la siguiente evaluación
+        self.prev_candle_price = curr_price
 
         default_result['current_price'] = curr_price
         default_result['poc'] = curr_poc
+        default_result['poc_upper'] = poc_upper
+        default_result['poc_lower'] = poc_lower
+        default_result['in_poc_zone'] = in_poc_zone
+        default_result['in_poc_superior'] = in_poc_superior
+        default_result['in_poc_inferior'] = in_poc_inferior
         default_result['vwap'] = curr_vwap
 
         entry_signal = None
         exit_signal = None
 
-        # Detección de Cruces de POC:
-        # Cruce de arriba hacia abajo: antes estaba por encima o igual al POC, y ahora está por debajo
-        poc_cross_down = (prev_price >= prev_poc) and (curr_price < curr_poc)
-
-        # Cruce de abajo hacia arriba: antes estaba por debajo o igual al POC, y ahora está por encima
-        poc_cross_up = (prev_price <= prev_poc) and (curr_price > curr_poc)
-
-        # 3) Entrada en long: cuando el precio cruza el POC de arriba hacia abajo y el precio es mayor al VWAP
-        if poc_cross_down and (curr_price > curr_vwap):
+        # 5) entrada en long: cuando el precio esta en zona POC, ha ingresado por zona POC superior y el precio es mayor al VWAP
+        if in_poc_zone and entered_from_superior and (curr_price > curr_vwap):
             entry_signal = 'LONG'
 
-        # 4) Entrada en short: cuando el precio cruza el POC de abajo hacia arriba y el precio es menor al VWAP
-        elif poc_cross_up and (curr_price < curr_vwap):
+        # 6) entrada en short: cuando el precio esta en zona POC, ha ingresado por zona POC inferior y el precio es menor al VWAP
+        elif in_poc_zone and entered_from_inferior and (curr_price < curr_vwap):
             entry_signal = 'SHORT'
 
-        # Lógica de cierre de operaciones por condición VWAP:
-        # Cerrar LONG cuando el precio es menor al VWAP en velas de 1 min
-        if curr_price < curr_vwap:
+        # 5) cerrar operacion (LONG) cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
+        if outside_poc_zone and (curr_price < curr_vwap):
             exit_signal = 'CLOSE_LONG'
 
-        # Cerrar SHORT cuando el precio es mayor al VWAP en velas de 1 min
-        elif curr_price > curr_vwap:
+        # 6) cerrar operacion (SHORT) cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
+        elif outside_poc_zone and (curr_price > curr_vwap):
             exit_signal = 'CLOSE_SHORT'
 
         default_result['entry_signal'] = entry_signal
@@ -725,13 +761,13 @@ class BinancePocVwapBot:
                     dur_mins=dur_mins
                 )
 
-                # 4. Lógica de salidas (cerrar operación cuando condición VWAP se cumpla, sin SL)
+                # 4. Lógica de salidas (cerrar operacion cuando el precio esta fuera de la zona POC y condicion VWAP, sin SL)
                 if active_pos == 'LONG' and strat_data['exit_signal'] == 'CLOSE_LONG':
-                    self.close_position(curr_price, reason="Precio menor al VWAP en velas de 1 min")
+                    self.close_position(curr_price, reason="Precio fuera de zona POC y menor al VWAP")
                     active_pos = None
 
                 elif active_pos == 'SHORT' and strat_data['exit_signal'] == 'CLOSE_SHORT':
-                    self.close_position(curr_price, reason="Precio mayor al VWAP en velas de 1 min")
+                    self.close_position(curr_price, reason="Precio fuera de zona POC y mayor al VWAP")
                     active_pos = None
 
                 # 5. Lógica de entradas (si no hay posición activa: una sola entrada a la vez)
