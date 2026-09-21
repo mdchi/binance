@@ -4,15 +4,18 @@ MARGIN_USDT=5.0
 LEVERAGE=10
 MARGIN_TYPE=ISOLATED
 
-# Estrategia: POC y VWAP (Velas de 1 minuto, Operación 24/7)
+# Estrategia: POC y VWAP (Velas de 1 minuto)
 TIMEFRAME=1m
 
 # Ventana de velas para cálculo de POC (Point of Control)
-# 240 velas de 1m = últimas 4 horas de perfil de volumen intradiario (o sesión activa)
+# 240 velas de 1m = últimas 4 horas de perfil de volumen intradiario
 POC_WINDOW_CANDLES=240
 
-# Operación 24 hs los 7 días de la semana
-OPERATE_24_7=True
+# Horario de operación: Únicamente días hábiles de la Bolsa de New York
+# Rango horario: 10:00 a 17:00 (horario Buenos Aires, UTC-3)
+HORARIO_INICIO_BSAS=10:00
+HORARIO_FIN_BSAS=17:00
+TIMEZONE_BSAS=America/Argentina/Buenos_Aires
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
@@ -21,5 +24,5 @@ USE_TESTNET=False
 # Intervalo de actualización en segundos (2 segundos para velas de 1m)
 POLL_INTERVAL_SEC=2
 
-# Zona POC: límite superior POC + OFFSET y límite inferior POC - OFFSET (Por defecto 40)
+# Zona POC: límite superior POC + OFFSET y límite inferior POC - OFFSET (40 por defecto)
 POC_ZONE_OFFSET=40.0

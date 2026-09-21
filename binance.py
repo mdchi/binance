@@ -4,20 +4,18 @@
 Bot de trading automatico en Binance.com
 
 Modo Aislado
-Apalancamiento 10x 
+Apalancamienot 10x 
 Monto 5 usdt
 
 Estrategia: POC y VWAP
-1) operar 24 hs los 7 dias de la semana
+1) operar unicamente los dias que abre la bolsa de new york y en el horario de 10 a 17 (horario buenos aires)
 2) hacer todos los calculos en temporalidad de 1 min
 3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 4) zona POC = limite superior POC+40 y limite inferior POC-40
-   zona POC superior = limite superior POC+40 y limite inferior POC
-   zona POC inferior = limite superior POC    y limite inferior POC-40
-5) entrada en long: cuando el precio esta en zona POC, ha ingresado por zona POC superior y el precio es mayor al VWAP
+5) entrada en long: cuando el precio esta en zona POC, ingresando por limite superior POC+40 y el precio es mayor al VWA
    cerrar operacion cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
    no colocar SL
-6) entrada en short: cuando el precio esta en zona POC, ha ingresado por zona POC inferior y el precio es menor al VWAP
+6) entrada en short: cuando el precio esta en zona POC, ingresando por limite inferior POC-40 y el precio es menor al VWA
    cerrar operacion cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
    no colocar SL
 
@@ -48,7 +46,11 @@ import sys
 import time
 import math
 import logging
-from datetime import datetime
+from datetime import datetime, date, time as dtime
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -80,7 +82,7 @@ for env_pub in [".envpublico", "envpublico", ".env", "env"]:
     if os.path.exists(env_pub):
         load_dotenv(env_pub)
 
-# 4. Importar biblioteca python-binance evitando conflicto con el archivo local binance.py
+# 4. Importar biblioteca python-binance evitando conflicto con el nombre de archivo local
 import importlib
 local_bin_module = sys.modules.pop('binance', None)
 sys_path_bak = list(sys.path)
@@ -95,6 +97,100 @@ finally:
     sys.path = sys_path_bak
     if local_bin_module is not None:
         sys.modules['binance'] = local_bin_module
+
+
+def calculate_nyse_holidays(year: int) -> set:
+    """
+    Calcula los feriados oficiales en que la Bolsa de Nueva York (NYSE) permanece CERRADA.
+    Reglas oficiales del NYSE:
+    - New Year's Day (Jan 1, observado el viernes si cae sábado o lunes si cae domingo)
+    - Martin Luther King Jr. Day (3er lunes de enero)
+    - Washington's Birthday / Presidents' Day (3er lunes de febrero)
+    - Good Friday (Viernes Santo, cálculo computacional del equinoccio eclesiástico)
+    - Memorial Day (Último lunes de mayo)
+    - Juneteenth National Independence Day (Junio 19, observado)
+    - Independence Day (Julio 4, observado)
+    - Labor Day (1er lunes de septiembre)
+    - Thanksgiving Day (4to jueves de noviembre)
+    - Christmas Day (Diciembre 25, observado)
+    """
+    holidays = set()
+
+    def observed(d: date) -> date:
+        if d.weekday() == 5:  # Sábado -> se observa el viernes anterior
+            return date(d.year, d.month, d.day - 1)
+        if d.weekday() == 6:  # Domingo -> se observa el lunes siguiente
+            return date(d.year, d.month, d.day + 1)
+        return d
+
+    def nth_weekday(year, month, target_weekday, n):
+        # target_weekday: 0=Monday, 3=Thursday
+        first_day = date(year, month, 1)
+        day_offset = (target_weekday - first_day.weekday()) % 7
+        target_day = 1 + day_offset + (n - 1) * 7
+        return date(year, month, target_day)
+
+    def last_weekday(year, month, target_weekday):
+        if month == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month + 1, 1)
+        last_day = date(year, month, (next_month - pd.Timedelta(days=1)).day)
+        day_offset = (last_day.weekday() - target_weekday) % 7
+        return date(year, month, last_day.day - day_offset)
+
+    def get_good_friday(year):
+        # Algoritmo de Butcher / Anonymous para computar Pascua (Easter)
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        easter_sunday = date(year, month, day)
+        return easter_sunday - pd.Timedelta(days=2)
+
+    # 1. New Year's Day
+    ny = observed(date(year, 1, 1))
+    if ny.year == year:
+        holidays.add(ny)
+
+    # 2. Martin Luther King Jr. Day (3er lunes de enero)
+    holidays.add(nth_weekday(year, 1, 0, 3))
+
+    # 3. Washington's Birthday (3er lunes de febrero)
+    holidays.add(nth_weekday(year, 2, 0, 3))
+
+    # 4. Good Friday
+    holidays.add(get_good_friday(year))
+
+    # 5. Memorial Day (último lunes de mayo)
+    holidays.add(last_weekday(year, 5, 0))
+
+    # 6. Juneteenth (19 de junio, observado desde 2021/2022)
+    holidays.add(observed(date(year, 6, 19)))
+
+    # 7. Independence Day (4 de julio, observado)
+    holidays.add(observed(date(year, 7, 4)))
+
+    # 8. Labor Day (1er lunes de septiembre)
+    holidays.add(nth_weekday(year, 9, 0, 1))
+
+    # 9. Thanksgiving Day (4to jueves de noviembre)
+    holidays.add(nth_weekday(year, 11, 3, 4))
+
+    # 10. Christmas Day (25 de diciembre, observado)
+    holidays.add(observed(date(year, 12, 25)))
+
+    return holidays
 
 
 class BinancePocVwapBot:
@@ -112,6 +208,24 @@ class BinancePocVwapBot:
         self.poc_zone_offset = float(os.getenv("POC_ZONE_OFFSET", "40.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
 
+        # Configuración de zona horaria Buenos Aires y Bolsa de Nueva York
+        self.tz_name = os.getenv("TIMEZONE_BSAS", "America/Argentina/Buenos_Aires")
+        try:
+            self.tz = ZoneInfo(self.tz_name)
+        except Exception:
+            self.tz = ZoneInfo("America/Argentina/Buenos_Aires")
+
+        # Rango horario de operación en Buenos Aires (10:00 a 17:00)
+        self.horario_inicio_str = os.getenv("HORARIO_INICIO_BSAS", "10:00")
+        self.horario_fin_str = os.getenv("HORARIO_FIN_BSAS", "17:00")
+        h_ini, m_ini = [int(x) for x in self.horario_inicio_str.split(":")]
+        h_fin, m_fin = [int(x) for x in self.horario_fin_str.split(":")]
+        self.time_start = dtime(h_ini, m_ini, 0)
+        self.time_end = dtime(h_fin, m_fin, 0)
+
+        # Cache de feriados NYSE por año
+        self._holidays_cache = {}
+
         # Modos de ejecución (dinero real por defecto o según configuración)
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
@@ -124,14 +238,14 @@ class BinancePocVwapBot:
         self.tick_size = 0.01
         self.step_size = 0.001
 
-        # Estado de la posición activa
+        # Estado de la posición activa (una sola entrada a la vez)
         self.current_position = None  # None, 'LONG', 'SHORT'
         self.entry_price = 0.0
         self.position_qty = 0.0
         self.entry_time = None
         self.simulated_balance = 100.0
 
-        # Seguimiento de transición de precio previo para detección de entrada por zona
+        # Seguimiento de transición de precio previo para detectar entrada por límites
         self.prev_candle_price = None
 
         # Métricas de la operación en curso
@@ -162,7 +276,7 @@ class BinancePocVwapBot:
 
     def _initialize_client(self):
         """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones abiertas iniciales."""
-        logging.info("Iniciando Bot Binance POC y VWAP (24/7)...")
+        logging.info("Iniciando Bot Binance POC y VWAP (Horario NY / Buenos Aires)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -300,6 +414,37 @@ class BinancePocVwapBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
+    def is_market_session_open(self):
+        """
+        ESTRATEGIA 1:
+        Operar únicamente los días que abre la bolsa de New York y en el horario de 10 a 17 (horario Buenos Aires).
+        Retorna (is_open: bool, status_msg: str, now_bsas: datetime)
+        """
+        now_bsas = datetime.now(self.tz)
+        today = now_bsas.date()
+
+        # Verificar fin de semana (5: Sábado, 6: Domingo)
+        if today.weekday() >= 5:
+            day_name = "Sabado" if today.weekday() == 5 else "Domingo"
+            return False, f"Bolsa de NY cerrada ({day_name} - Fin de semana)", now_bsas
+
+        # Verificar feriados oficiales del NYSE
+        year = today.year
+        if year not in self._holidays_cache:
+            self._holidays_cache[year] = calculate_nyse_holidays(year)
+
+        if today in self._holidays_cache[year]:
+            return False, "Bolsa de NY cerrada (Feriado Bursatil NYSE)", now_bsas
+
+        # Verificar rango de horario en Buenos Aires (10:00 a 17:00)
+        curr_time = now_bsas.time()
+        if curr_time < self.time_start:
+            return False, f"Mercado no iniciado (Horario: {self.horario_inicio_str} a {self.horario_fin_str} Buenos Aires)", now_bsas
+        elif curr_time >= self.time_end:
+            return False, f"Mercado finalizado (Horario: {self.horario_inicio_str} a {self.horario_fin_str} Buenos Aires)", now_bsas
+
+        return True, f"Mercado Abierto ({self.horario_inicio_str} a {self.horario_fin_str} Buenos Aires / NYSE Activo)", now_bsas
+
     def fetch_klines(self, limit=300):
         """Obtiene klines OHLCV en velas de 1 minuto (1m) desde Binance Futures."""
         try:
@@ -338,7 +483,7 @@ class BinancePocVwapBot:
         """
         Calcula el Point of Control (POC) para cada vela basándose en el Perfil de Volumen (Volume Profile).
         El POC es el nivel de precio donde se negoció el mayor volumen.
-        Para cada vela i, toma las velas precedentes de la ventana (por defecto self.poc_window o la sesión)
+        Para cada vela i, toma las velas precedentes de la ventana (por defecto self.poc_window)
         y divide el rango de precios en bins discretizados basados en tick_size / resolución.
         """
         if window is None:
@@ -377,17 +522,15 @@ class BinancePocVwapBot:
 
     def analyze_strategy(self):
         """
-        Estrategia: POC y VWAP en temporalidad de 1 min (24/7)
-        1) operar 24 hs los 7 dias de la semana
+        Estrategia: POC y VWAP
+        1) operar unicamente los dias que abre la bolsa de new york y en el horario de 10 a 17 (horario buenos aires)
         2) hacer todos los calculos en temporalidad de 1 min
         3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
         4) zona POC = limite superior POC+40 y limite inferior POC-40
-           zona POC superior = limite superior POC+40 y limite inferior POC
-           zona POC inferior = limite superior POC    y limite inferior POC-40
-        5) entrada en long: cuando el precio esta en zona POC, ha ingresado por zona POC superior y el precio es mayor al VWAP
+        5) entrada en long: cuando el precio esta en zona POC, ingresando por limite superior POC+40 y el precio es mayor al VWAP
            cerrar operacion cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
            no colocar SL
-        6) entrada en short: cuando el precio esta en zona POC, ha ingresado por zona POC inferior y el precio es menor al VWAP
+        6) entrada en short: cuando el precio esta en zona POC, ingresando por limite inferior POC-40 y el precio es menor al VWAP
            cerrar operacion cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
            no colocar SL
         """
@@ -399,8 +542,6 @@ class BinancePocVwapBot:
             'poc_upper': 0.0,
             'poc_lower': 0.0,
             'in_poc_zone': False,
-            'in_poc_superior': False,
-            'in_poc_inferior': False,
             'vwap': 0.0,
             'entry_signal': None,  # 'LONG', 'SHORT' o None
             'exit_signal': None    # 'CLOSE_LONG', 'CLOSE_SHORT' o None
@@ -421,24 +562,20 @@ class BinancePocVwapBot:
         curr_vwap = float(curr_candle['vwap'])
 
         # Límites de la zona POC (40 por defecto)
+        # 4) zona POC = limite superior POC+40 y limite inferior POC-40
         poc_upper = curr_poc + self.poc_zone_offset
         poc_lower = curr_poc - self.poc_zone_offset
 
-        # 4) zona POC = limite superior POC+40 y limite inferior POC-40
-        #    zona POC superior = limite superior POC+40 y limite inferior POC
-        #    zona POC inferior = limite superior POC    y limite inferior POC-40
         in_poc_zone = (poc_lower <= curr_price <= poc_upper)
-        in_poc_superior = (curr_poc <= curr_price <= poc_upper)
-        in_poc_inferior = (poc_lower <= curr_price <= curr_poc)
         outside_poc_zone = (curr_price > poc_upper) or (curr_price < poc_lower)
 
-        # Ha ingresado por zona POC superior:
-        # Previamente estaba por encima de la zona POC (> poc_upper) y ahora se sitúa en la zona POC superior
-        entered_from_superior = (prev_price >= poc_upper) and in_poc_superior
+        # 5) Ingresando por limite superior POC+40:
+        # El precio previo estaba por encima del limite superior (> poc_upper) y el precio actual entra a la zona POC
+        entered_from_upper = (prev_price >= poc_upper) and in_poc_zone
 
-        # Ha ingresado por zona POC inferior:
-        # Previamente estaba por debajo de la zona POC (< poc_lower) y ahora se sitúa en la zona POC inferior
-        entered_from_inferior = (prev_price <= poc_lower) and in_poc_inferior
+        # 6) Ingresando por limite inferior POC-40:
+        # El precio previo estaba por debajo del limite inferior (< poc_lower) y el precio actual entra a la zona POC
+        entered_from_lower = (prev_price <= poc_lower) and in_poc_zone
 
         # Actualizar precio para la siguiente evaluación
         self.prev_candle_price = curr_price
@@ -448,19 +585,17 @@ class BinancePocVwapBot:
         default_result['poc_upper'] = poc_upper
         default_result['poc_lower'] = poc_lower
         default_result['in_poc_zone'] = in_poc_zone
-        default_result['in_poc_superior'] = in_poc_superior
-        default_result['in_poc_inferior'] = in_poc_inferior
         default_result['vwap'] = curr_vwap
 
         entry_signal = None
         exit_signal = None
 
-        # 5) entrada en long: cuando el precio esta en zona POC, ha ingresado por zona POC superior y el precio es mayor al VWAP
-        if in_poc_zone and entered_from_superior and (curr_price > curr_vwap):
+        # 5) entrada en long: cuando el precio esta en zona POC, ingresando por limite superior POC+40 y el precio es mayor al VWAP
+        if in_poc_zone and entered_from_upper and (curr_price > curr_vwap):
             entry_signal = 'LONG'
 
-        # 6) entrada en short: cuando el precio esta en zona POC, ha ingresado por zona POC inferior y el precio es menor al VWAP
-        elif in_poc_zone and entered_from_inferior and (curr_price < curr_vwap):
+        # 6) entrada en short: cuando el precio esta en zona POC, ingresando por limite inferior POC-40 y el precio es menor al VWAP
+        elif in_poc_zone and entered_from_lower and (curr_price < curr_vwap):
             entry_signal = 'SHORT'
 
         # 5) cerrar operacion (LONG) cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
@@ -627,13 +762,13 @@ class BinancePocVwapBot:
         except Exception as e:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
-    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins):
+    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins, market_open, status_msg, now_bsas):
         """
         DETALLES 3:
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla únicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
-        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos (\033[H).
+        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos (\\033[H).
         - El formato del estado actual para estrategia:
           en una linea: nombre de estrategia
           en otra linea: precio
@@ -667,14 +802,14 @@ class BinancePocVwapBot:
         if active_pos:
             dur_str = f" ({dur_mins:.1f}m)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
-            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | Sin SL (Cierre por condición VWAP)"
+            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | Sin SL (Cierre por condicion VWAP)"
         else:
             pos_line_str = "SIN POSICION"
 
         curr_price_str = f"${strat_data['current_price']:.2f}"
         poc_val_str = f"${strat_data['poc']:.2f}"
         vwap_val_str = f"${strat_data['vwap']:.2f}"
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        bsas_time_str = now_bsas.strftime("%Y-%m-%d %H:%M:%S (Buenos Aires)")
 
         # Construcción del texto monocromo (sin códigos de colores ANSI)
         lines = []
@@ -698,7 +833,7 @@ class BinancePocVwapBot:
         # en otra linea: posicion
         lines.append(f"nombre de estrategia: {strat_data['strategy_name']}")
         lines.append(f"precio: {curr_price_str} | POC: {poc_val_str} | VWAP: {vwap_val_str}")
-        lines.append(f"horario: Operacion 24/7 continua | Fecha y Hora: {now_str}")
+        lines.append(f"horario: {status_msg} | Hora actual: {bsas_time_str}")
         lines.append(f"posicion: {pos_line_str}")
         lines.append("======================================================================")
 
@@ -708,12 +843,15 @@ class BinancePocVwapBot:
         sys.stdout.flush()
 
     def run(self):
-        """Bucle principal de ejecución 24/7 del bot."""
+        """Bucle principal de ejecución del bot con filtro de horario NYSE y Buenos Aires 10 a 17."""
         logging.info("Bucle principal de monitoreo POC y VWAP iniciado.")
 
         while True:
             try:
-                # 1. Analizar estrategia POC y VWAP en velas de 1 minuto
+                # 1. Verificar si la Bolsa de NY y horario de Buenos Aires están habilitados
+                market_open, status_msg, now_bsas = self.is_market_session_open()
+
+                # 2. Analizar estrategia POC y VWAP en velas de 1 minuto
                 strat_data = self.analyze_strategy()
                 curr_price = strat_data['current_price']
 
@@ -721,7 +859,7 @@ class BinancePocVwapBot:
                     time.sleep(self.poll_interval)
                     continue
 
-                # 2. Consultar posición activa
+                # 3. Consultar posición activa
                 active_pos, entry, qty = self.get_active_position()
 
                 # Si no está en dry_run pero externamente se cerró la posición
@@ -751,17 +889,20 @@ class BinancePocVwapBot:
                     if pnl_pct < self.min_pnl_pct:
                         self.min_pnl_pct = pnl_pct
 
-                # 3. Renderizar pantalla monocroma con cabecera y estado actual
+                # 4. Renderizar pantalla monocroma con cabecera y estado actual
                 self.render_screen(
                     strat_data=strat_data,
                     active_pos=active_pos,
                     entry=entry,
                     qty=qty,
                     pnl_pct=pnl_pct,
-                    dur_mins=dur_mins
+                    dur_mins=dur_mins,
+                    market_open=market_open,
+                    status_msg=status_msg,
+                    now_bsas=now_bsas
                 )
 
-                # 4. Lógica de salidas (cerrar operacion cuando el precio esta fuera de la zona POC y condicion VWAP, sin SL)
+                # 5. Lógica de salidas (cerrar operacion cuando el precio esta fuera de la zona POC y condicion VWAP, sin SL)
                 if active_pos == 'LONG' and strat_data['exit_signal'] == 'CLOSE_LONG':
                     self.close_position(curr_price, reason="Precio fuera de zona POC y menor al VWAP")
                     active_pos = None
@@ -770,8 +911,9 @@ class BinancePocVwapBot:
                     self.close_position(curr_price, reason="Precio fuera de zona POC y mayor al VWAP")
                     active_pos = None
 
-                # 5. Lógica de entradas (si no hay posición activa: una sola entrada a la vez)
-                if active_pos is None and strat_data['entry_signal']:
+                # 6. Lógica de entradas (SOLO SI EL MERCADO ESTÁ ABIERTO: días hábiles NYSE y horario 10 a 17 Buenos Aires)
+                # 3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+                if market_open and active_pos is None and strat_data['entry_signal']:
                     signal = strat_data['entry_signal']
                     self.open_position(side=signal, current_price=curr_price)
 
