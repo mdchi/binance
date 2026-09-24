@@ -11,10 +11,10 @@ Estrategia: Oracle numeris
 1) operar las 24 hs los 7 dias de la semana
 2) hacer todos los calculos en temporalidad de 1 min
 3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-4) entrada en long: cuando el indicador oracle numeris marca señal de compra al finalizar la vela de 1 min
+4) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
    cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada
    no colocar SL
-5) entrada en short: cuando el indicador oracle numeris marca señal de venta al finalizar la vela de 1 min
+5) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
    cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada
    no colocar SL
 
@@ -378,31 +378,28 @@ class BinanceOracleNumerisBot:
 
         df = self.calculate_oracle_numeris_indicator(df)
 
-        # Vela actual en desarrollo (tiempo real)
+        # Vela actual en desarrollo (tiempo real de 1 min)
         curr_candle = df.iloc[-1]
+        prev_candle = df.iloc[-2]
         curr_price = float(curr_candle['close'])
+        curr_candle_time = curr_candle['timestamp']
         default_result['current_price'] = curr_price
+        default_result['candle_time'] = curr_candle_time
 
-        # Vela anterior: es la vela de 1 minuto finalizada/cerrada
-        closed_candle = df.iloc[-2]
-        prev_closed_candle = df.iloc[-3]
-        closed_time = closed_candle['timestamp']
-        default_result['candle_time'] = closed_time
+        # Determinar señal del indicador Oracle Numeris inmediatamente con los datos actuales
+        c_close = curr_candle['close']
+        c_open = curr_candle['open']
+        c_fast = curr_candle['ema_fast']
+        c_slow = curr_candle['ema_slow']
+        c_vol = curr_candle['volume']
+        c_vol_ma = curr_candle['vol_ma']
+        c_rsi = curr_candle['rsi']
 
-        # Determinar señal del indicador Oracle Numeris en la vela finalizada
-        c_close = closed_candle['close']
-        c_open = closed_candle['open']
-        c_fast = closed_candle['ema_fast']
-        c_slow = closed_candle['ema_slow']
-        c_vol = closed_candle['volume']
-        c_vol_ma = closed_candle['vol_ma']
-        c_rsi = closed_candle['rsi']
+        p_close = prev_candle['close']
+        p_fast = prev_candle['ema_fast']
+        p_slow = prev_candle['ema_slow']
 
-        p_close = prev_closed_candle['close']
-        p_fast = prev_closed_candle['ema_fast']
-        p_slow = prev_closed_candle['ema_slow']
-
-        # Detección de cruce o confirmación tendencial al finalizar la vela
+        # Detección de cruce o confirmación tendencial inmediatamente en tiempo real
         bullish_cross = (p_fast <= p_slow) and (c_fast > c_slow)
         bullish_continuation = (c_fast > c_slow) and (c_close > c_open) and (c_rsi > 50) and (c_vol > c_vol_ma * 0.8)
 
@@ -417,14 +414,14 @@ class BinanceOracleNumerisBot:
 
         default_result['oracle_signal'] = oracle_signal
 
-        # Validar si esta vela cerrada ya generó entrada para no duplicar en la misma vela de 1 min
-        if self.last_evaluated_candle_time != closed_time:
+        # Entrada inmediata: cuando el indicador marca señal, si no se ejecutó ya en esta vela de 1 min
+        if self.last_evaluated_candle_time != curr_candle_time:
             if oracle_signal == "COMPRA":
                 default_result['entry_signal'] = 'LONG'
-                self.last_evaluated_candle_time = closed_time
+                self.last_evaluated_candle_time = curr_candle_time
             elif oracle_signal == "VENTA":
                 default_result['entry_signal'] = 'SHORT'
-                self.last_evaluated_candle_time = closed_time
+                self.last_evaluated_candle_time = curr_candle_time
         else:
             default_result['entry_signal'] = None
 
