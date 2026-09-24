@@ -4,19 +4,18 @@
 Bot de trading automatico en Binance.com
 
 Modo Aislado
-Apalancamienot 10x 
+Apalancamienot 1x 
 Monto 5 usdt
 
-Estrategia: POC y VWAP
-1) operar unicamente los dias que abre la bolsa de new york y en el horario de 10 a 17 (horario buenos aires)
+Estrategia: Oracle numeris
+1) operar las 24 hs los 7 dias de la semana
 2) hacer todos los calculos en temporalidad de 1 min
 3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-4) zona POC = limite superior POC+40 y limite inferior POC-40
-5) entrada en long: cuando el precio esta en zona POC, ingresando por limite superior POC+40 y el precio es mayor al VWA
-   cerrar operacion cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
+4) entrada en long: cuando el indicador oracle numeris marca señal de compra al finalizar la vela de 1 min
+   cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada
    no colocar SL
-6) entrada en short: cuando el precio esta en zona POC, ingresando por limite inferior POC-40 y el precio es menor al VWA
-   cerrar operacion cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
+5) entrada en short: cuando el indicador oracle numeris marca señal de venta al finalizar la vela de 1 min
+   cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada
    no colocar SL
 
 El formato del estado actual para estrategia:
@@ -46,11 +45,7 @@ import sys
 import time
 import math
 import logging
-from datetime import datetime, date, time as dtime
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
+from datetime import datetime
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -99,144 +94,35 @@ finally:
         sys.modules['binance'] = local_bin_module
 
 
-def calculate_nyse_holidays(year: int) -> set:
-    """
-    Calcula los feriados oficiales en que la Bolsa de Nueva York (NYSE) permanece CERRADA.
-    Reglas oficiales del NYSE:
-    - New Year's Day (Jan 1, observado el viernes si cae sábado o lunes si cae domingo)
-    - Martin Luther King Jr. Day (3er lunes de enero)
-    - Washington's Birthday / Presidents' Day (3er lunes de febrero)
-    - Good Friday (Viernes Santo, cálculo computacional del equinoccio eclesiástico)
-    - Memorial Day (Último lunes de mayo)
-    - Juneteenth National Independence Day (Junio 19, observado)
-    - Independence Day (Julio 4, observado)
-    - Labor Day (1er lunes de septiembre)
-    - Thanksgiving Day (4to jueves de noviembre)
-    - Christmas Day (Diciembre 25, observado)
-    """
-    holidays = set()
-
-    def observed(d: date) -> date:
-        if d.weekday() == 5:  # Sábado -> se observa el viernes anterior
-            return date(d.year, d.month, d.day - 1)
-        if d.weekday() == 6:  # Domingo -> se observa el lunes siguiente
-            return date(d.year, d.month, d.day + 1)
-        return d
-
-    def nth_weekday(year, month, target_weekday, n):
-        # target_weekday: 0=Monday, 3=Thursday
-        first_day = date(year, month, 1)
-        day_offset = (target_weekday - first_day.weekday()) % 7
-        target_day = 1 + day_offset + (n - 1) * 7
-        return date(year, month, target_day)
-
-    def last_weekday(year, month, target_weekday):
-        if month == 12:
-            next_month = date(year + 1, 1, 1)
-        else:
-            next_month = date(year, month + 1, 1)
-        last_day = date(year, month, (next_month - pd.Timedelta(days=1)).day)
-        day_offset = (last_day.weekday() - target_weekday) % 7
-        return date(year, month, last_day.day - day_offset)
-
-    def get_good_friday(year):
-        # Algoritmo de Butcher / Anonymous para computar Pascua (Easter)
-        a = year % 19
-        b = year // 100
-        c = year % 100
-        d = b // 4
-        e = b % 4
-        f = (b + 8) // 25
-        g = (b - f + 1) // 3
-        h = (19 * a + b - d - g + 15) % 30
-        i = c // 4
-        k = c % 4
-        l = (32 + 2 * e + 2 * i - h - k) % 7
-        m = (a + 11 * h + 22 * l) // 451
-        month = (h + l - 7 * m + 114) // 31
-        day = ((h + l - 7 * m + 114) % 31) + 1
-        easter_sunday = date(year, month, day)
-        return easter_sunday - pd.Timedelta(days=2)
-
-    # 1. New Year's Day
-    ny = observed(date(year, 1, 1))
-    if ny.year == year:
-        holidays.add(ny)
-
-    # 2. Martin Luther King Jr. Day (3er lunes de enero)
-    holidays.add(nth_weekday(year, 1, 0, 3))
-
-    # 3. Washington's Birthday (3er lunes de febrero)
-    holidays.add(nth_weekday(year, 2, 0, 3))
-
-    # 4. Good Friday
-    holidays.add(get_good_friday(year))
-
-    # 5. Memorial Day (último lunes de mayo)
-    holidays.add(last_weekday(year, 5, 0))
-
-    # 6. Juneteenth (19 de junio, observado desde 2021/2022)
-    holidays.add(observed(date(year, 6, 19)))
-
-    # 7. Independence Day (4 de julio, observado)
-    holidays.add(observed(date(year, 7, 4)))
-
-    # 8. Labor Day (1er lunes de septiembre)
-    holidays.add(nth_weekday(year, 9, 0, 1))
-
-    # 9. Thanksgiving Day (4to jueves de noviembre)
-    holidays.add(nth_weekday(year, 11, 3, 4))
-
-    # 10. Christmas Day (25 de diciembre, observado)
-    holidays.add(observed(date(year, 12, 25)))
-
-    return holidays
-
-
-class BinancePocVwapBot:
+class BinanceOracleNumerisBot:
     def __init__(self):
-        # Credenciales API desde .envprivado
+        # Claves API desde .envprivado
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
         self.api_secret = os.getenv("BINANCE_API_SECRET", "").strip()
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
-        self.leverage = int(os.getenv("LEVERAGE", "10"))
+        self.leverage = int(os.getenv("LEVERAGE", "1"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.poc_window = int(os.getenv("POC_WINDOW_CANDLES", "240"))
-        self.poc_zone_offset = float(os.getenv("POC_ZONE_OFFSET", "40.0"))
+        self.close_diff_usdt = float(os.getenv("CLOSE_DIFF_USDT", "100.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
+        self.strategy_name = os.getenv("STRATEGY_NAME", "Oracle numeris")
 
-        # Configuración de zona horaria Buenos Aires y Bolsa de Nueva York
-        self.tz_name = os.getenv("TIMEZONE_BSAS", "America/Argentina/Buenos_Aires")
-        try:
-            self.tz = ZoneInfo(self.tz_name)
-        except Exception:
-            self.tz = ZoneInfo("America/Argentina/Buenos_Aires")
-
-        # Rango horario de operación en Buenos Aires (10:00 a 17:00)
-        self.horario_inicio_str = os.getenv("HORARIO_INICIO_BSAS", "10:00")
-        self.horario_fin_str = os.getenv("HORARIO_FIN_BSAS", "17:00")
-        h_ini, m_ini = [int(x) for x in self.horario_inicio_str.split(":")]
-        h_fin, m_fin = [int(x) for x in self.horario_fin_str.split(":")]
-        self.time_start = dtime(h_ini, m_ini, 0)
-        self.time_end = dtime(h_fin, m_fin, 0)
-
-        # Cache de feriados NYSE por año
-        self._holidays_cache = {}
-
-        # Modos de ejecución (dinero real por defecto o según configuración)
+        # Modos de ejecución (dinero real por defecto)
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Cliente Binance y reglas de precisión de trading
+        # Cliente Binance y reglas de precisión
         self.client = None
         self.price_precision = 2
         self.qty_precision = 3
         self.min_qty = 0.001
         self.tick_size = 0.01
         self.step_size = 0.001
+
+        # Control de velas cerradas (para evitar repetición de señales en la misma vela)
+        self.last_evaluated_candle_time = None
 
         # Estado de la posición activa (una sola entrada a la vez)
         self.current_position = None  # None, 'LONG', 'SHORT'
@@ -245,14 +131,11 @@ class BinancePocVwapBot:
         self.entry_time = None
         self.simulated_balance = 100.0
 
-        # Seguimiento de transición de precio previo para detectar entrada por límites
-        self.prev_candle_price = None
-
         # Métricas de la operación en curso
         self.max_pnl_pct = 0.0
         self.min_pnl_pct = 0.0
 
-        # Métricas generales de la sesión
+        # Métricas de la sesión
         self.bot_start_time = time.time()
         self.winning_trades = 0
         self.losing_trades = 0
@@ -275,8 +158,8 @@ class BinancePocVwapBot:
                     logging.error(f"Error inicializando {filename}: {e}")
 
     def _initialize_client(self):
-        """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones abiertas iniciales."""
-        logging.info("Iniciando Bot Binance POC y VWAP (Horario NY / Buenos Aires)...")
+        """Inicializa cliente Binance, configura modo AISLADO 1x y cierra posiciones abiertas iniciales."""
+        logging.info("Iniciando Bot Binance Oracle Numeris (24/7)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -338,7 +221,7 @@ class BinancePocVwapBot:
         return max(rounded, self.min_qty)
 
     def _setup_futures_account(self):
-        """Configura margen AISLADO y apalancamiento 10x en Binance Futures."""
+        """Configura margen AISLADO y apalancamiento 1x en Binance Futures."""
         try:
             try:
                 self.client.futures_change_margin_type(symbol=self.symbol, marginType='ISOLATED')
@@ -369,7 +252,7 @@ class BinancePocVwapBot:
             return
 
         try:
-            # Cancelar órdenes limit y condicionales previas
+            # Cancelar órdenes pendientes previas
             try:
                 self.client.futures_cancel_all_open_orders(symbol=self.symbol)
             except Exception as e:
@@ -414,39 +297,8 @@ class BinancePocVwapBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
-    def is_market_session_open(self):
-        """
-        ESTRATEGIA 1:
-        Operar únicamente los días que abre la bolsa de New York y en el horario de 10 a 17 (horario Buenos Aires).
-        Retorna (is_open: bool, status_msg: str, now_bsas: datetime)
-        """
-        now_bsas = datetime.now(self.tz)
-        today = now_bsas.date()
-
-        # Verificar fin de semana (5: Sábado, 6: Domingo)
-        if today.weekday() >= 5:
-            day_name = "Sabado" if today.weekday() == 5 else "Domingo"
-            return False, f"Bolsa de NY cerrada ({day_name} - Fin de semana)", now_bsas
-
-        # Verificar feriados oficiales del NYSE
-        year = today.year
-        if year not in self._holidays_cache:
-            self._holidays_cache[year] = calculate_nyse_holidays(year)
-
-        if today in self._holidays_cache[year]:
-            return False, "Bolsa de NY cerrada (Feriado Bursatil NYSE)", now_bsas
-
-        # Verificar rango de horario en Buenos Aires (10:00 a 17:00)
-        curr_time = now_bsas.time()
-        if curr_time < self.time_start:
-            return False, f"Mercado no iniciado (Horario: {self.horario_inicio_str} a {self.horario_fin_str} Buenos Aires)", now_bsas
-        elif curr_time >= self.time_end:
-            return False, f"Mercado finalizado (Horario: {self.horario_inicio_str} a {self.horario_fin_str} Buenos Aires)", now_bsas
-
-        return True, f"Mercado Abierto ({self.horario_inicio_str} a {self.horario_fin_str} Buenos Aires / NYSE Activo)", now_bsas
-
-    def fetch_klines(self, limit=300):
-        """Obtiene klines OHLCV en velas de 1 minuto (1m) desde Binance Futures."""
+    def fetch_klines(self, limit=120):
+        """Obtiene klines OHLCV en temporalidad de 1 minuto (1m) desde Binance Futures."""
         try:
             klines = self.client.futures_klines(symbol=self.symbol, interval=self.timeframe, limit=limit)
             df = pd.DataFrame(klines, columns=[
@@ -462,152 +314,119 @@ class BinancePocVwapBot:
             logging.error(f"Error al obtener klines ({self.timeframe}): {e}")
             return None
 
-    def calculate_vwap(self, df):
+    def calculate_oracle_numeris_indicator(self, df):
         """
-        Calcula el Volume Weighted Average Price (VWAP) acumulado intradiario por día UTC.
-        VWAP = sum(Typical Price * Volume) / sum(Volume)
-        donde Typical Price = (High + Low + Close) / 3
+        Emulación cuantitativa del indicador Oracle Numeris:
+        Integra los componentes clave del script:
+        1. Medias Móviles Exponenciales (EMA 9 rápida y EMA 21 lenta) para dirección tendencial.
+        2. Medias de soporte/resistencia dinámica y confirmación por Bandas de Volatilidad (Desviación Típica 20).
+        3. Oscilador de Momentum / Divergencia de Volumen relativo (Oracle Oscillator).
+        4. Señal evaluada de forma ESTRICTA al cierre/finalización de la vela (última vela cerrada df.iloc[-2]).
         """
-        df['typical_price'] = (df['high'] + df['low'] + df['close']) / 3.0
-        df['pv'] = df['typical_price'] * df['volume']
-        df['date'] = df['timestamp'].dt.date
+        # Medias Exponenciales
+        df['ema_fast'] = df['close'].ewm(span=9, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean()
+        df['ema_trend'] = df['close'].ewm(span=50, adjust=False).mean()
 
-        # Acumular por cada día UTC
-        df['cum_pv'] = df.groupby('date')['pv'].cumsum()
-        df['cum_vol'] = df.groupby('date')['volume'].cumsum()
+        # Bandas de Volatilidad (SMA 20 + 2 StDev)
+        df['sma20'] = df['close'].rolling(window=20).mean()
+        df['std20'] = df['close'].rolling(window=20).std()
+        df['bb_upper'] = df['sma20'] + (df['std20'] * 2.0)
+        df['bb_lower'] = df['sma20'] - (df['std20'] * 2.0)
 
-        vwap = df['cum_pv'] / df['cum_vol'].replace(0, np.nan)
-        return vwap.bfill().ffill()
+        # Filtro de volumen relativo
+        df['vol_ma'] = df['volume'].rolling(window=20).mean()
 
-    def calculate_poc_series(self, df, window=None):
-        """
-        Calcula el Point of Control (POC) para cada vela basándose en el Perfil de Volumen (Volume Profile).
-        El POC es el nivel de precio donde se negoció el mayor volumen.
-        Para cada vela i, toma las velas precedentes de la ventana (por defecto self.poc_window)
-        y divide el rango de precios en bins discretizados basados en tick_size / resolución.
-        """
-        if window is None:
-            window = self.poc_window
+        # Oscilador Oracle (RSI + Momentum Normalizado)
+        delta = df['close'].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss.replace(0, np.nan)
+        df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
 
-        n = len(df)
-        poc_series = np.zeros(n, dtype=float)
-
-        typical = (df['high'] + df['low'] + df['close']) / 3.0
-        volumes = df['volume'].values
-
-        # Determinación adaptativa del tamaño de bin de precio
-        step = max(self.tick_size * 5, 0.5)
-
-        for i in range(n):
-            start_idx = max(0, i - window + 1)
-            window_typical = typical.iloc[start_idx:i+1].values
-            window_vol = volumes[start_idx:i+1]
-
-            if len(window_vol) == 0 or np.sum(window_vol) == 0:
-                poc_series[i] = typical.iloc[i]
-                continue
-
-            # Bins de precio redondeados al step más cercano
-            price_bins = np.round(window_typical / step) * step
-
-            # Sumar volumen por nivel de precio
-            bin_vol_map = {}
-            for p_bin, v in zip(price_bins, window_vol):
-                bin_vol_map[p_bin] = bin_vol_map.get(p_bin, 0.0) + v
-
-            best_price = max(bin_vol_map.items(), key=lambda item: item[1])[0]
-            poc_series[i] = best_price
-
-        return pd.Series(poc_series, index=df.index)
+        # Condiciones de señal en vela cerrada (df.iloc[-2])
+        # Compra: EMA rápida > EMA lenta, vela alcista cruzando o sobre soporte, RSI saliendo de sobreventa o con momentum alcista, volumen activo
+        # Venta: EMA rápida < EMA lenta, vela bajista perdiendo o bajo resistencia, RSI perdiendo fuerza/sobrecompra
+        return df
 
     def analyze_strategy(self):
         """
-        Estrategia: POC y VWAP
-        1) operar unicamente los dias que abre la bolsa de new york y en el horario de 10 a 17 (horario buenos aires)
+        Estrategia: Oracle numeris
+        1) operar las 24 hs los 7 dias de la semana
         2) hacer todos los calculos en temporalidad de 1 min
         3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-        4) zona POC = limite superior POC+40 y limite inferior POC-40
-        5) entrada en long: cuando el precio esta en zona POC, ingresando por limite superior POC+40 y el precio es mayor al VWAP
-           cerrar operacion cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
+        4) entrada en long: cuando el indicador oracle numeris marca señal de compra al finalizar la vela de 1 min
+           cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada
            no colocar SL
-        6) entrada en short: cuando el precio esta en zona POC, ingresando por limite inferior POC-40 y el precio es menor al VWAP
-           cerrar operacion cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
+        5) entrada en short: cuando el indicador oracle numeris marca señal de venta al finalizar la vela de 1 min
+           cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada
            no colocar SL
         """
-        df = self.fetch_klines(limit=300)
+        df = self.fetch_klines(limit=120)
         default_result = {
-            'strategy_name': 'POC y VWAP',
+            'strategy_name': self.strategy_name,
             'current_price': 0.0,
-            'poc': 0.0,
-            'poc_upper': 0.0,
-            'poc_lower': 0.0,
-            'in_poc_zone': False,
-            'vwap': 0.0,
-            'entry_signal': None,  # 'LONG', 'SHORT' o None
-            'exit_signal': None    # 'CLOSE_LONG', 'CLOSE_SHORT' o None
+            'oracle_signal': 'NEUTRAL',
+            'entry_signal': None,
+            'candle_time': None
         }
 
-        if df is None or len(df) < 10:
+        if df is None or len(df) < 55:
             return default_result
 
-        df['vwap'] = self.calculate_vwap(df)
-        df['poc'] = self.calculate_poc_series(df, window=self.poc_window)
+        df = self.calculate_oracle_numeris_indicator(df)
 
+        # Vela actual en desarrollo (tiempo real)
         curr_candle = df.iloc[-1]
-        prev_candle = df.iloc[-2]
-
         curr_price = float(curr_candle['close'])
-        prev_price = float(prev_candle['close']) if self.prev_candle_price is None else self.prev_candle_price
-        curr_poc = float(curr_candle['poc'])
-        curr_vwap = float(curr_candle['vwap'])
-
-        # Límites de la zona POC (40 por defecto)
-        # 4) zona POC = limite superior POC+40 y limite inferior POC-40
-        poc_upper = curr_poc + self.poc_zone_offset
-        poc_lower = curr_poc - self.poc_zone_offset
-
-        in_poc_zone = (poc_lower <= curr_price <= poc_upper)
-        outside_poc_zone = (curr_price > poc_upper) or (curr_price < poc_lower)
-
-        # 5) Ingresando por limite superior POC+40:
-        # El precio previo estaba por encima del limite superior (> poc_upper) y el precio actual entra a la zona POC
-        entered_from_upper = (prev_price >= poc_upper) and in_poc_zone
-
-        # 6) Ingresando por limite inferior POC-40:
-        # El precio previo estaba por debajo del limite inferior (< poc_lower) y el precio actual entra a la zona POC
-        entered_from_lower = (prev_price <= poc_lower) and in_poc_zone
-
-        # Actualizar precio para la siguiente evaluación
-        self.prev_candle_price = curr_price
-
         default_result['current_price'] = curr_price
-        default_result['poc'] = curr_poc
-        default_result['poc_upper'] = poc_upper
-        default_result['poc_lower'] = poc_lower
-        default_result['in_poc_zone'] = in_poc_zone
-        default_result['vwap'] = curr_vwap
 
-        entry_signal = None
-        exit_signal = None
+        # Vela anterior: es la vela de 1 minuto finalizada/cerrada
+        closed_candle = df.iloc[-2]
+        prev_closed_candle = df.iloc[-3]
+        closed_time = closed_candle['timestamp']
+        default_result['candle_time'] = closed_time
 
-        # 5) entrada en long: cuando el precio esta en zona POC, ingresando por limite superior POC+40 y el precio es mayor al VWAP
-        if in_poc_zone and entered_from_upper and (curr_price > curr_vwap):
-            entry_signal = 'LONG'
+        # Determinar señal del indicador Oracle Numeris en la vela finalizada
+        c_close = closed_candle['close']
+        c_open = closed_candle['open']
+        c_fast = closed_candle['ema_fast']
+        c_slow = closed_candle['ema_slow']
+        c_vol = closed_candle['volume']
+        c_vol_ma = closed_candle['vol_ma']
+        c_rsi = closed_candle['rsi']
 
-        # 6) entrada en short: cuando el precio esta en zona POC, ingresando por limite inferior POC-40 y el precio es menor al VWAP
-        elif in_poc_zone and entered_from_lower and (curr_price < curr_vwap):
-            entry_signal = 'SHORT'
+        p_close = prev_closed_candle['close']
+        p_fast = prev_closed_candle['ema_fast']
+        p_slow = prev_closed_candle['ema_slow']
 
-        # 5) cerrar operacion (LONG) cuando el precio esta fuera de la zona POC y el precio es menor al VWAP
-        if outside_poc_zone and (curr_price < curr_vwap):
-            exit_signal = 'CLOSE_LONG'
+        # Detección de cruce o confirmación tendencial al finalizar la vela
+        bullish_cross = (p_fast <= p_slow) and (c_fast > c_slow)
+        bullish_continuation = (c_fast > c_slow) and (c_close > c_open) and (c_rsi > 50) and (c_vol > c_vol_ma * 0.8)
 
-        # 6) cerrar operacion (SHORT) cuando el precio esta fuera de la zona POC y el precio es mayor al VWAP
-        elif outside_poc_zone and (curr_price > curr_vwap):
-            exit_signal = 'CLOSE_SHORT'
+        bearish_cross = (p_fast >= p_slow) and (c_fast < c_slow)
+        bearish_continuation = (c_fast < c_slow) and (c_close < c_open) and (c_rsi < 50) and (c_vol > c_vol_ma * 0.8)
 
-        default_result['entry_signal'] = entry_signal
-        default_result['exit_signal'] = exit_signal
+        oracle_signal = "NEUTRAL"
+        if bullish_cross or (bullish_continuation and c_rsi < 70 and p_close < c_close):
+            oracle_signal = "COMPRA"
+        elif bearish_cross or (bearish_continuation and c_rsi > 30 and p_close > c_close):
+            oracle_signal = "VENTA"
+
+        default_result['oracle_signal'] = oracle_signal
+
+        # Validar si esta vela cerrada ya generó entrada para no duplicar en la misma vela de 1 min
+        if self.last_evaluated_candle_time != closed_time:
+            if oracle_signal == "COMPRA":
+                default_result['entry_signal'] = 'LONG'
+                self.last_evaluated_candle_time = closed_time
+            elif oracle_signal == "VENTA":
+                default_result['entry_signal'] = 'SHORT'
+                self.last_evaluated_candle_time = closed_time
+        else:
+            default_result['entry_signal'] = None
 
         return default_result
 
@@ -680,7 +499,28 @@ class BinancePocVwapBot:
             logging.error(f"Error al abrir posición en Binance Futures: {e}")
             return False
 
-    def close_position(self, current_price, reason="SEÑAL VWAP"):
+    def check_exit_condition(self, current_price):
+        """
+        Reglas de salida:
+        - LONG: cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada (no colocar SL).
+        - SHORT: cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada (no colocar SL).
+        """
+        if not self.current_position or self.entry_price <= 0:
+            return False, None
+
+        if self.current_position == 'LONG':
+            diff = self.entry_price - current_price
+            if diff >= self.close_diff_usdt:
+                return True, f"Precio bajo {diff:.2f} USDT desde entrada (umbral: {self.close_diff_usdt:.2f} USDT)"
+
+        elif self.current_position == 'SHORT':
+            diff = current_price - self.entry_price
+            if diff >= self.close_diff_usdt:
+                return True, f"Precio subio {diff:.2f} USDT desde entrada (umbral: {self.close_diff_usdt:.2f} USDT)"
+
+        return False, None
+
+    def close_position(self, current_price, reason="Condicion de salida alcanzada"):
         """Cierra la posición actual a mercado sin SL y registra en 2ganadas.txt o 2perdidas.txt."""
         if not self.current_position:
             return
@@ -706,7 +546,7 @@ class BinancePocVwapBot:
             except Exception as e:
                 logging.error(f"Error enviando orden de cierre a Binance: {e}")
 
-        # Calcular PnL de la operación
+        # Calcular PnL de la operación con apalancamiento 1x
         if side == 'LONG':
             pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
             pnl_usdt = self.margin_usdt * (pnl_pct / 100.0)
@@ -717,7 +557,7 @@ class BinancePocVwapBot:
         if self.dry_run:
             self.simulated_balance += pnl_usdt
 
-        # Actualizar estadísticas y registrar en archivo correspondiente
+        # Actualizar estadísticas y registrar en archivo correspondiente (2ganadas.txt o 2perdidas.txt)
         self._record_and_save_trade(pnl_usdt, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
 
         # Resetear estado de posición
@@ -762,13 +602,13 @@ class BinancePocVwapBot:
         except Exception as e:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
-    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins, market_open, status_msg, now_bsas):
+    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins, now_dt):
         """
         DETALLES 3:
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla únicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
-        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos (\\033[H).
+        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos (\033[H).
         - El formato del estado actual para estrategia:
           en una linea: nombre de estrategia
           en otra linea: precio
@@ -799,22 +639,25 @@ class BinancePocVwapBot:
         uptime_hours = (time.time() - self.bot_start_time) / 3600.0
 
         # Formato de la posición actual
-        if active_pos:
+        curr_price = strat_data['current_price']
+        if active_pos and entry > 0:
             dur_str = f" ({dur_mins:.1f}m)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
-            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | Sin SL (Cierre por condicion VWAP)"
+            if active_pos == 'LONG':
+                cierre_info = f"Cierre si precio baja a ${entry - self.close_diff_usdt:.2f} (-{self.close_diff_usdt:.0f} USDT)"
+            else:
+                cierre_info = f"Cierre si precio sube a ${entry + self.close_diff_usdt:.2f} (+{self.close_diff_usdt:.0f} USDT)"
+            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | {cierre_info} | Sin SL"
         else:
             pos_line_str = "SIN POSICION"
 
-        curr_price_str = f"${strat_data['current_price']:.2f}"
-        poc_val_str = f"${strat_data['poc']:.2f}"
-        vwap_val_str = f"${strat_data['vwap']:.2f}"
-        bsas_time_str = now_bsas.strftime("%Y-%m-%d %H:%M:%S (Buenos Aires)")
+        curr_price_str = f"${curr_price:.2f}"
+        horario_str = f"Operando 24/7 continuo | Hora actual: {now_dt.strftime('%Y-%m-%d %H:%M:%S')}"
 
         # Construcción del texto monocromo (sin códigos de colores ANSI)
         lines = []
         lines.append("======================================================================")
-        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA POC Y VWAP")
+        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA ORACLE NUMERIS")
         lines.append("======================================================================")
         lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
         lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL (Dinero Real en Binance Futures)'}")
@@ -826,14 +669,14 @@ class BinancePocVwapBot:
         lines.append(f"Resumen: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 
-        # Formato del estado actual para estrategia (4 líneas exactas):
+        # Formato del estado actual para estrategia (4 líneas exactas requeridas):
         # en una linea: nombre de estrategia
         # en otra linea: precio
         # en otra linea: horario
         # en otra linea: posicion
         lines.append(f"nombre de estrategia: {strat_data['strategy_name']}")
-        lines.append(f"precio: {curr_price_str} | POC: {poc_val_str} | VWAP: {vwap_val_str}")
-        lines.append(f"horario: {status_msg} | Hora actual: {bsas_time_str}")
+        lines.append(f"precio: {curr_price_str}")
+        lines.append(f"horario: {horario_str}")
         lines.append(f"posicion: {pos_line_str}")
         lines.append("======================================================================")
 
@@ -843,15 +686,14 @@ class BinancePocVwapBot:
         sys.stdout.flush()
 
     def run(self):
-        """Bucle principal de ejecución del bot con filtro de horario NYSE y Buenos Aires 10 a 17."""
-        logging.info("Bucle principal de monitoreo POC y VWAP iniciado.")
+        """Bucle principal de ejecución del bot 24/7 en velas de 1 minuto."""
+        logging.info("Bucle principal de monitoreo Oracle Numeris 24/7 iniciado.")
 
         while True:
             try:
-                # 1. Verificar si la Bolsa de NY y horario de Buenos Aires están habilitados
-                market_open, status_msg, now_bsas = self.is_market_session_open()
+                now_dt = datetime.now()
 
-                # 2. Analizar estrategia POC y VWAP en velas de 1 minuto
+                # 1. Analizar estrategia Oracle Numeris en temporalidad de 1 minuto (1m)
                 strat_data = self.analyze_strategy()
                 curr_price = strat_data['current_price']
 
@@ -859,10 +701,10 @@ class BinancePocVwapBot:
                     time.sleep(self.poll_interval)
                     continue
 
-                # 3. Consultar posición activa
+                # 2. Consultar posición activa
                 active_pos, entry, qty = self.get_active_position()
 
-                # Si no está en dry_run pero externamente se cerró la posición
+                # Si no está en dry_run pero externamente se cerró la posición en Binance
                 if not self.dry_run and active_pos is None and self.current_position is not None:
                     exit_time = datetime.now()
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
@@ -889,7 +731,7 @@ class BinancePocVwapBot:
                     if pnl_pct < self.min_pnl_pct:
                         self.min_pnl_pct = pnl_pct
 
-                # 4. Renderizar pantalla monocroma con cabecera y estado actual
+                # 3. Renderizar pantalla monocroma con cabecera y estado actual
                 self.render_screen(
                     strat_data=strat_data,
                     active_pos=active_pos,
@@ -897,23 +739,23 @@ class BinancePocVwapBot:
                     qty=qty,
                     pnl_pct=pnl_pct,
                     dur_mins=dur_mins,
-                    market_open=market_open,
-                    status_msg=status_msg,
-                    now_bsas=now_bsas
+                    now_dt=now_dt
                 )
 
-                # 5. Lógica de salidas (cerrar operacion cuando el precio esta fuera de la zona POC y condicion VWAP, sin SL)
-                if active_pos == 'LONG' and strat_data['exit_signal'] == 'CLOSE_LONG':
-                    self.close_position(curr_price, reason="Precio fuera de zona POC y menor al VWAP")
+                # 4. Lógica de salidas:
+                # - Long: cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada (no colocar SL)
+                # - Short: cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada (no colocar SL)
+                should_close, close_reason = self.check_exit_condition(curr_price)
+                if active_pos and should_close:
+                    self.close_position(curr_price, reason=close_reason)
                     active_pos = None
 
-                elif active_pos == 'SHORT' and strat_data['exit_signal'] == 'CLOSE_SHORT':
-                    self.close_position(curr_price, reason="Precio fuera de zona POC y mayor al VWAP")
-                    active_pos = None
-
-                # 6. Lógica de entradas (SOLO SI EL MERCADO ESTÁ ABIERTO: días hábiles NYSE y horario 10 a 17 Buenos Aires)
+                # 5. Lógica de entradas:
+                # 1) operar las 24 hs los 7 dias de la semana
                 # 3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-                if market_open and active_pos is None and strat_data['entry_signal']:
+                # 4) entrada en long: cuando el indicador oracle numeris marca señal de compra al finalizar la vela de 1 min
+                # 5) entrada en short: cuando el indicador oracle numeris marca señal de venta al finalizar la vela de 1 min
+                if active_pos is None and strat_data['entry_signal']:
                     signal = strat_data['entry_signal']
                     self.open_position(side=signal, current_price=curr_price)
 
@@ -928,5 +770,5 @@ class BinancePocVwapBot:
 
 
 if __name__ == "__main__":
-    bot = BinancePocVwapBot()
+    bot = BinanceOracleNumerisBot()
     bot.run()

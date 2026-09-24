@@ -1,28 +1,27 @@
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
 MARGIN_USDT=5.0
-LEVERAGE=10
+LEVERAGE=1
 MARGIN_TYPE=ISOLATED
 
-# Estrategia: POC y VWAP (Velas de 1 minuto)
+# Estrategia: Oracle Numeris
+STRATEGY_NAME=Oracle numeris
 TIMEFRAME=1m
 
-# Ventana de velas para cálculo de POC (Point of Control)
-# 240 velas de 1m = últimas 4 horas de perfil de volumen intradiario
-POC_WINDOW_CANDLES=240
-
-# Horario de operación: Únicamente días hábiles de la Bolsa de New York
-# Rango horario: 10:00 a 17:00 (horario Buenos Aires, UTC-3)
-HORARIO_INICIO_BSAS=10:00
-HORARIO_FIN_BSAS=17:00
-TIMEZONE_BSAS=America/Argentina/Buenos_Aires
+# Diferencial de precio para cierre de operación en USDT (100 USDT)
+# Long cierra cuando el precio baja 100 USDT desde la entrada
+# Short cierra cuando el precio sube 100 USDT desde la entrada
+CLOSE_DIFF_USDT=100.0
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
 USE_TESTNET=False
 
-# Intervalo de actualización en segundos (2 segundos para velas de 1m)
+# Intervalo de actualización en segundos para monitoreo continuo en velas de 1m
 POLL_INTERVAL_SEC=2
 
-# Zona POC: límite superior POC + OFFSET y límite inferior POC - OFFSET (40 por defecto)
-POC_ZONE_OFFSET=40.0
+# Parámetros del indicador Oracle Numeris (Emulación algorítmica cuantitativa)
+ORACLE_EMA_FAST=9
+ORACLE_EMA_SLOW=21
+ORACLE_VOL_FACTOR=1.2
+ORACLE_MOMENTUM_LEN=14
