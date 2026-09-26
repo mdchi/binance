@@ -13,11 +13,12 @@ Estrategia: Oracle numeris
 3) hacer todos los calculos en temporalidad de 1 min
 4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
-   cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada
-   no colocar SL
+   TP: cuando el precio sube usdt 100 desde el punto de entrada
+   SL: cuando el precio baja usdt 300 desde el punto de entrada
 6) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
-   cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada
-   no colocar SL
+   TP: cuando el precio baja usdt 100 desde el punto de entrada
+   SL: cuando el precio sube usdt 300 desde el punto de entrada
+7) cerrar operacion luego de 50 min desde el punto de entrada
 
 El formato del estado actual para estrategia:
 en una linea: nombre de estrategia
@@ -170,7 +171,9 @@ class BinanceOracleNumerisBot:
 
         self.leverage = int(os.getenv("LEVERAGE", "1"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.close_diff_usdt = float(os.getenv("CLOSE_DIFF_USDT", "100.0"))
+        self.take_profit_usdt = float(os.getenv("TAKE_PROFIT_USDT", "100.0"))
+        self.stop_loss_usdt = float(os.getenv("STOP_LOSS_USDT", "300.0"))
+        self.max_duration_mins = float(os.getenv("MAX_DURATION_MINUTES", "50.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
         self.strategy_name = os.getenv("STRATEGY_NAME", "Oracle numeris")
 
@@ -689,21 +692,42 @@ class BinanceOracleNumerisBot:
     def check_exit_condition(self, current_price):
         """
         Reglas de salida:
-        - LONG: cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada (no colocar SL).
-        - SHORT: cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada (no colocar SL).
+        5) LONG:
+           - TP: cuando el precio sube 100 USDT desde la entrada
+           - SL: cuando el precio baja 300 USDT desde la entrada
+        6) SHORT:
+           - TP: cuando el precio baja 100 USDT desde la entrada
+           - SL: cuando el precio sube 300 USDT desde la entrada
+        7) Tiempo máximo: cerrar operación luego de 50 min desde el punto de entrada
         """
         if not self.current_position or self.entry_price <= 0:
             return False, None
 
+        # 7) Comprobar límite de tiempo de 50 minutos
+        if self.entry_time:
+            dur_mins = (datetime.now() - self.entry_time).total_seconds() / 60.0
+            if dur_mins >= self.max_duration_mins:
+                return True, f"Tiempo maximo alcanzado ({dur_mins:.1f}m >= {self.max_duration_mins:.0f}m)"
+
         if self.current_position == 'LONG':
-            diff = self.entry_price - current_price
-            if diff >= self.close_diff_usdt:
-                return True, f"Precio bajo {diff:.2f} USDT desde entrada (umbral: {self.close_diff_usdt:.2f} USDT)"
+            # TP: precio sube 100 USDT
+            if current_price >= self.entry_price + self.take_profit_usdt:
+                diff = current_price - self.entry_price
+                return True, f"TP alcanzado (+{diff:.2f} USDT >= +{self.take_profit_usdt:.2f} USDT)"
+            # SL: precio baja 300 USDT
+            if current_price <= self.entry_price - self.stop_loss_usdt:
+                diff = self.entry_price - current_price
+                return True, f"SL alcanzado (-{diff:.2f} USDT >= -{self.stop_loss_usdt:.2f} USDT)"
 
         elif self.current_position == 'SHORT':
-            diff = current_price - self.entry_price
-            if diff >= self.close_diff_usdt:
-                return True, f"Precio subio {diff:.2f} USDT desde entrada (umbral: {self.close_diff_usdt:.2f} USDT)"
+            # TP: precio baja 100 USDT
+            if current_price <= self.entry_price - self.take_profit_usdt:
+                diff = self.entry_price - current_price
+                return True, f"TP alcanzado (+{diff:.2f} USDT de ganancia >= +{self.take_profit_usdt:.2f} USDT)"
+            # SL: precio sube 300 USDT
+            if current_price >= self.entry_price + self.stop_loss_usdt:
+                diff = current_price - self.entry_price
+                return True, f"SL alcanzado (-{diff:.2f} USDT de perdida >= -{self.stop_loss_usdt:.2f} USDT)"
 
         return False, None
 
@@ -831,10 +855,10 @@ class BinanceOracleNumerisBot:
             dur_str = f" ({dur_mins:.1f}m)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
             if active_pos == 'LONG':
-                cierre_info = f"Cierre si precio baja a ${entry - self.close_diff_usdt:.2f} (-{self.close_diff_usdt:.0f} USDT)"
+                cierre_info = f"TP: ${entry + self.take_profit_usdt:.2f} (+{self.take_profit_usdt:.0f}) | SL: ${entry - self.stop_loss_usdt:.2f} (-{self.stop_loss_usdt:.0f}) | Max: {self.max_duration_mins:.0f}m"
             else:
-                cierre_info = f"Cierre si precio sube a ${entry + self.close_diff_usdt:.2f} (+{self.close_diff_usdt:.0f} USDT)"
-            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | {cierre_info} | Sin SL"
+                cierre_info = f"TP: ${entry - self.take_profit_usdt:.2f} (-{self.take_profit_usdt:.0f}) | SL: ${entry + self.stop_loss_usdt:.2f} (+{self.stop_loss_usdt:.0f}) | Max: {self.max_duration_mins:.0f}m"
+            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | {cierre_info}"
         else:
             pos_line_str = "SIN POSICION"
 

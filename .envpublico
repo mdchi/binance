@@ -9,10 +9,12 @@ MARGIN_TYPE=ISOLATED
 STRATEGY_NAME=Oracle numeris
 TIMEFRAME=1m
 
-# Diferencial de precio para cierre de operación en USDT (100 USDT)
-# Long cierra cuando el precio baja 100 USDT desde la entrada
-# Short cierra cuando el precio sube 100 USDT desde la entrada
-CLOSE_DIFF_USDT=100.0
+# Parámetros de Salida (TP, SL y Duración máxima)
+# Long: TP = entrada + 100 USDT, SL = entrada - 300 USDT
+# Short: TP = entrada - 100 USDT, SL = entrada + 300 USDT
+TAKE_PROFIT_USDT=100.0
+STOP_LOSS_USDT=300.0
+MAX_DURATION_MINUTES=50.0
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
