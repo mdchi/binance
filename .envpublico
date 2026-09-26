@@ -1,7 +1,7 @@
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
 MARGIN_USDT=5.0
-LEVERAGE=2
+LEVERAGE=1
 MARGIN_TYPE=ISOLATED
 
 # Estrategia: Oracle Numeris

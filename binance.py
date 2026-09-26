@@ -4,7 +4,7 @@
 Bot de trading automatico en Binance.com
 
 Modo Aislado
-Apalancamiento 2x 
+Apalancamiento 1x 
 Monto 5 usdt
 
 Estrategia: Oracle numeris
@@ -161,7 +161,7 @@ class BinanceOracleNumerisBot:
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
-        self.leverage = int(os.getenv("LEVERAGE", "2"))
+        self.leverage = int(os.getenv("LEVERAGE", "1"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.close_diff_usdt = float(os.getenv("CLOSE_DIFF_USDT", "100.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
