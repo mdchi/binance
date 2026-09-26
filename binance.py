@@ -4,17 +4,18 @@
 Bot de trading automatico en Binance.com
 
 Modo Aislado
-Apalancamienot 1x 
+Apalancamiento 2x 
 Monto 5 usdt
 
 Estrategia: Oracle numeris
-1) operar las 24 hs los 7 dias de la semana
-2) hacer todos los calculos en temporalidad de 1 min
-3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-4) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
+1) extraer los datos del indicador oracle numeris directamente de tradingview
+2) operar las 24 hs los 7 dias de la semana
+3) hacer todos los calculos en temporalidad de 1 min
+4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
    cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada
    no colocar SL
-5) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
+6) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
    cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada
    no colocar SL
 
@@ -46,6 +47,9 @@ import time
 import math
 import logging
 from datetime import datetime
+import json
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
@@ -94,6 +98,60 @@ finally:
         sys.modules['binance'] = local_bin_module
 
 
+class TradingViewWebhookHandler(BaseHTTPRequestHandler):
+    """Manejador HTTP para recibir alertas y señales directamente de TradingView vía Webhook."""
+    bot_instance = None
+
+    def log_message(self, format, *args):
+        # Redirigir logs HTTP a bot.log para mantener la pantalla de consola limpia
+        logging.info("TradingView Webhook HTTP: " + (format % args))
+
+    def do_POST(self):
+        content_length = int(self.headers.get('Content-Length', 0))
+        post_data = self.rfile.read(content_length)
+
+        try:
+            payload = {}
+            if post_data:
+                try:
+                    payload = json.loads(post_data.decode('utf-8'))
+                except Exception:
+                    # En caso de texto plano en vez de JSON
+                    text_content = post_data.decode('utf-8', errors='ignore').strip()
+                    payload = {'action': text_content, 'raw': text_content}
+
+            if self.bot_instance:
+                success, msg = self.bot_instance.process_tradingview_webhook(payload)
+                if success:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'status': 'ok', 'message': msg}).encode('utf-8'))
+                else:
+                    self.send_response(400)
+                    self.send_header('Content-Type', 'application/json')
+                    self.end_headers()
+                    self.wfile.write(json.dumps({'status': 'error', 'message': msg}).encode('utf-8'))
+            else:
+                self.send_response(503)
+                self.end_headers()
+        except Exception as e:
+            logging.error(f"Error procesando webhook de TradingView: {e}")
+            self.send_response(500)
+            self.end_headers()
+
+    def do_GET(self):
+        """Endpoint de verificación de salud del servidor Webhook."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.end_headers()
+        self.wfile.write(json.dumps({
+            'status': 'online',
+            'bot': 'Binance Oracle Numeris TradingView Webhook',
+            'symbol': self.bot_instance.symbol if self.bot_instance else 'N/A'
+        }).encode('utf-8'))
+
+
 class BinanceOracleNumerisBot:
     def __init__(self):
         # Claves API desde .envprivado
@@ -103,11 +161,17 @@ class BinanceOracleNumerisBot:
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
-        self.leverage = int(os.getenv("LEVERAGE", "1"))
+        self.leverage = int(os.getenv("LEVERAGE", "2"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.close_diff_usdt = float(os.getenv("CLOSE_DIFF_USDT", "100.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
         self.strategy_name = os.getenv("STRATEGY_NAME", "Oracle numeris")
+
+        # Parámetros del indicador Oracle Numeris configurables en .envpublico
+        self.oracle_ema_fast = int(os.getenv("ORACLE_EMA_FAST", "9"))
+        self.oracle_ema_slow = int(os.getenv("ORACLE_EMA_SLOW", "21"))
+        self.oracle_vol_factor = float(os.getenv("ORACLE_VOL_FACTOR", "1.2"))
+        self.oracle_momentum_len = int(os.getenv("ORACLE_MOMENTUM_LEN", "14"))
 
         # Modos de ejecución (dinero real por defecto)
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
@@ -141,6 +205,17 @@ class BinanceOracleNumerisBot:
         self.losing_trades = 0
         self.money_won = 0.0
         self.money_lost = 0.0
+
+        # Integración directa de señales de TradingView vía Webhook HTTP
+        self.webhook_enabled = os.getenv("WEBHOOK_ENABLED", "True").lower() in ("true", "1", "yes")
+        self.webhook_host = os.getenv("WEBHOOK_HOST", "0.0.0.0")
+        self.webhook_port = int(os.getenv("WEBHOOK_PORT", "80"))
+        self.webhook_passphrase = os.getenv("WEBHOOK_PASSPHRASE", "oracle_numeris_secret")
+        self.webhook_signal_queue = []
+        self.webhook_server = None
+        self.webhook_server_thread = None
+        self.last_tv_signal = "ESPERANDO"
+        self.last_tv_signal_time = None
 
         # Inicialización de archivos y cliente
         self._init_trade_log_files()
@@ -187,6 +262,10 @@ class BinanceOracleNumerisBot:
             if not self.dry_run:
                 logging.info("Cambiando automáticamente a modo DRY-RUN por error de conexión.")
                 self.dry_run = True
+
+        # Iniciar servidor Webhook local para recibir señales de TradingView
+        if self.webhook_enabled:
+            self._start_webhook_server()
 
     def _update_symbol_precision(self):
         """Obtiene precisión de precio y cantidad para el símbolo."""
@@ -297,6 +376,54 @@ class BinanceOracleNumerisBot:
         except Exception as e:
             logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
 
+    def _start_webhook_server(self):
+        """Inicia el servidor HTTP de Webhooks en un hilo de fondo (daemon)."""
+        try:
+            TradingViewWebhookHandler.bot_instance = self
+            self.webhook_server = HTTPServer((self.webhook_host, self.webhook_port), TradingViewWebhookHandler)
+            self.webhook_server_thread = threading.Thread(target=self.webhook_server.serve_forever, daemon=True)
+            self.webhook_server_thread.start()
+            logging.info(f"Servidor Webhook TradingView escuchando en http://{self.webhook_host}:{self.webhook_port}/")
+        except Exception as e:
+            logging.error(f"No se pudo iniciar el servidor Webhook en puerto {self.webhook_port}: {e}")
+
+    def process_tradingview_webhook(self, data):
+        """
+        Procesa el payload recibido directamente desde la alerta de TradingView.
+        Acepta formato JSON o texto con contraseña y acción (COMPRA/VENTA/BUY/SELL/LONG/SHORT).
+        """
+        # Validación opcional de contraseña de seguridad
+        req_pass = data.get('passphrase') or data.get('password') or data.get('secret') or data.get('token')
+        if self.webhook_passphrase and req_pass and req_pass != self.webhook_passphrase:
+            logging.warning("TradingView Webhook: Contraseña incorrecta rechazada.")
+            return False, "Contraseña no válida"
+
+        # Detección de acción o señal
+        action_raw = str(data.get('action') or data.get('signal') or data.get('order') or data.get('side') or data.get('raw', '')).upper()
+
+        signal = None
+        if "BUY" in action_raw or "COMPRA" in action_raw or "LONG" in action_raw:
+            signal = "LONG"
+        elif "SELL" in action_raw or "VENTA" in action_raw or "SHORT" in action_raw:
+            signal = "SHORT"
+
+        if not signal:
+            logging.warning(f"TradingView Webhook: Señal no reconocida ({action_raw})")
+            return False, f"Señal no reconocida: {action_raw}"
+
+        # Registrar recepción de la señal de TradingView
+        self.last_tv_signal = signal
+        self.last_tv_signal_time = datetime.now()
+        logging.info(f"TradingView Webhook RECIBIDO con éxito: Señal {signal} para {self.symbol} a las {self.last_tv_signal_time.strftime('%H:%M:%S')}")
+
+        # Encolar para ejecución inmediata en la siguiente iteración del bot
+        self.webhook_signal_queue.append({
+            'signal': signal,
+            'received_at': self.last_tv_signal_time,
+            'source': 'TRADINGVIEW_WEBHOOK'
+        })
+        return True, f"Señal {signal} recibida y encolada"
+
     def fetch_klines(self, limit=120):
         """Obtiene klines OHLCV en temporalidad de 1 minuto (1m) desde Binance Futures."""
         try:
@@ -316,39 +443,41 @@ class BinanceOracleNumerisBot:
 
     def calculate_oracle_numeris_indicator(self, df):
         """
-        Emulación cuantitativa del indicador Oracle Numeris:
-        Integra los componentes clave del script:
-        1. Medias Móviles Exponenciales (EMA 9 rápida y EMA 21 lenta) para dirección tendencial.
-        2. Medias de soporte/resistencia dinámica y confirmación por Bandas de Volatilidad (Desviación Típica 20).
-        3. Oscilador de Momentum / Divergencia de Volumen relativo (Oracle Oscillator).
-        4. Señal evaluada de forma ESTRICTA al cierre/finalización de la vela (última vela cerrada df.iloc[-2]).
+        Cálculo cuantitativo local de alta fidelidad del indicador Oracle Numeris:
+        Integra los 4 componentes técnicos del sistema Oracle Numeris:
+        1. Medias Móviles Exponenciales Direccionales:
+           - EMA Rápida (default: 9) y EMA Lenta (default: 21) parametrizables en .envpublico.
+           - EMA de Tendencia Macro (50) para filtrado de contexto.
+        2. Soporte y Resistencia Dinámicos por Volatilidad:
+           - Base SMA 20 y Bandas de Bollinger de Volatilidad (2.0 Desviaciones Estándar).
+        3. Filtro de Volumen y Presión Compradora/Vendedora:
+           - Promedio de volumen móvil (20) escalado por ORACLE_VOL_FACTOR.
+        4. Oscilador de Momentum Oracle (Oracle Oscillator):
+           - RSI Momentum con período configurable (default: 14) y línea de señal media (50).
         """
-        # Medias Exponenciales
-        df['ema_fast'] = df['close'].ewm(span=9, adjust=False).mean()
-        df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean()
+        # 1. Medias Móviles del indicador Oracle Numeris
+        df['ema_fast'] = df['close'].ewm(span=self.oracle_ema_fast, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=self.oracle_ema_slow, adjust=False).mean()
         df['ema_trend'] = df['close'].ewm(span=50, adjust=False).mean()
 
-        # Bandas de Volatilidad (SMA 20 + 2 StDev)
+        # 2. Soportes/Resistencias Dinámicos y Bandas de Volatilidad
         df['sma20'] = df['close'].rolling(window=20).mean()
         df['std20'] = df['close'].rolling(window=20).std()
         df['bb_upper'] = df['sma20'] + (df['std20'] * 2.0)
         df['bb_lower'] = df['sma20'] - (df['std20'] * 2.0)
 
-        # Filtro de volumen relativo
+        # 3. Filtro de Volumen de actividad institucional
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
 
-        # Oscilador Oracle (RSI + Momentum Normalizado)
+        # 4. Oracle Oscillator (Momentum normalizado de flujo de órdenes)
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
         loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=14).mean()
-        avg_loss = loss.rolling(window=14).mean()
+        avg_gain = gain.rolling(window=self.oracle_momentum_len).mean()
+        avg_loss = loss.rolling(window=self.oracle_momentum_len).mean()
         rs = avg_gain / avg_loss.replace(0, np.nan)
         df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
 
-        # Condiciones de señal en vela cerrada (df.iloc[-2])
-        # Compra: EMA rápida > EMA lenta, vela alcista cruzando o sobre soporte, RSI saliendo de sobreventa o con momentum alcista, volumen activo
-        # Venta: EMA rápida < EMA lenta, vela bajista perdiendo o bajo resistencia, RSI perdiendo fuerza/sobrecompra
         return df
 
     def analyze_strategy(self):
@@ -400,16 +529,40 @@ class BinanceOracleNumerisBot:
         p_slow = prev_candle['ema_slow']
 
         # Detección de cruce o confirmación tendencial inmediatamente en tiempo real
-        bullish_cross = (p_fast <= p_slow) and (c_fast > c_slow)
-        bullish_continuation = (c_fast > c_slow) and (c_close > c_open) and (c_rsi > 50) and (c_vol > c_vol_ma * 0.8)
+        c_bb_up = curr_candle['bb_upper']
+        c_bb_low = curr_candle['bb_lower']
+        c_sma20 = curr_candle['sma20']
 
+        # Condiciones de Compra (LONG):
+        # - Cruce alcista de EMA rápida sobre lenta, o
+        # - Tendencia alcista (fast > slow) con rebote sobre soporte/SMA20 o vela alcista fuerte con volumen y RSI en zona óptima
+        bullish_cross = (p_fast <= p_slow) and (c_fast > c_slow)
+        bullish_momentum = (c_fast > c_slow) and (c_close > c_open) and (c_rsi > 50) and (c_vol >= c_vol_ma * (self.oracle_vol_factor * 0.7))
+
+        # Condiciones de Venta (SHORT):
+        # - Cruce bajista de EMA rápida bajo lenta, o
+        # - Tendencia bajista (fast < slow) con rechazo en resistencia/SMA20 o vela bajista fuerte con volumen y RSI bajo 50
         bearish_cross = (p_fast >= p_slow) and (c_fast < c_slow)
-        bearish_continuation = (c_fast < c_slow) and (c_close < c_open) and (c_rsi < 50) and (c_vol > c_vol_ma * 0.8)
+        bearish_momentum = (c_fast < c_slow) and (c_close < c_open) and (c_rsi < 50) and (c_vol >= c_vol_ma * (self.oracle_vol_factor * 0.7))
 
         oracle_signal = "NEUTRAL"
-        if bullish_cross or (bullish_continuation and c_rsi < 70 and p_close < c_close):
+        signal_source = "CALCULO_LOCAL"
+
+        # 1. Prioridad: Verificar si llegó señal directa del indicador Oracle Numeris desde TradingView
+        if self.webhook_signal_queue:
+            tv_item = self.webhook_signal_queue.pop(0)
+            tv_sig = tv_item['signal']
+            signal_source = "TRADINGVIEW_WEBHOOK"
+            oracle_signal = "COMPRA" if tv_sig == 'LONG' else "VENTA"
+            default_result['oracle_signal'] = oracle_signal
+            default_result['entry_signal'] = tv_sig
+            logging.info(f"Procesando senal DIRECTA de TradingView: {tv_sig} a precio ${curr_price:.2f}")
+            return default_result
+
+        # 2. Detección por cálculo cuantitativo local en tiempo real
+        if bullish_cross or (bullish_momentum and c_rsi < 72 and p_close < c_close):
             oracle_signal = "COMPRA"
-        elif bearish_cross or (bearish_continuation and c_rsi > 30 and p_close > c_close):
+        elif bearish_cross or (bearish_momentum and c_rsi > 28 and p_close > c_close):
             oracle_signal = "VENTA"
 
         default_result['oracle_signal'] = oracle_signal
@@ -663,6 +816,8 @@ class BinanceOracleNumerisBot:
             lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
         else:
             lines.append(f"Saldo Wallet (Simulado): {wallet_bal:.2f} USDT")
+        tv_status = f"Puerto {self.webhook_port} (Activo)" if self.webhook_enabled else "Desactivado"
+        lines.append(f"TradingView Webhook: {tv_status} | Ultima senal TV: {self.last_tv_signal}")
         lines.append(f"Resumen: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 

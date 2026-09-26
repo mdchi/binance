@@ -1,7 +1,7 @@
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
 MARGIN_USDT=5.0
-LEVERAGE=1
+LEVERAGE=2
 MARGIN_TYPE=ISOLATED
 
 # Estrategia: Oracle Numeris
@@ -25,3 +25,10 @@ ORACLE_EMA_FAST=9
 ORACLE_EMA_SLOW=21
 ORACLE_VOL_FACTOR=1.2
 ORACLE_MOMENTUM_LEN=14
+
+# Integración Directa TradingView Webhook
+WEBHOOK_ENABLED=True
+WEBHOOK_HOST=0.0.0.0
+WEBHOOK_PORT=80
+WEBHOOK_PASSPHRASE=oracle_numeris_secret
+
