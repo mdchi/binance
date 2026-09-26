@@ -10,11 +10,11 @@ STRATEGY_NAME=Oracle numeris
 TIMEFRAME=1m
 
 # Parámetros de Salida (TP, SL y Duración máxima)
-# Long: TP = entrada + 100 USDT, SL = entrada - 300 USDT
-# Short: TP = entrada - 100 USDT, SL = entrada + 300 USDT
+# Long: TP = entrada + 100 USDT, SL = entrada - 100 USDT
+# Short: TP = entrada - 100 USDT, SL = entrada + 100 USDT
 TAKE_PROFIT_USDT=100.0
-STOP_LOSS_USDT=300.0
-MAX_DURATION_MINUTES=50.0
+STOP_LOSS_USDT=100.0
+MAX_DURATION_MINUTES=30.0
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False

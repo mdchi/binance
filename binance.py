@@ -14,11 +14,11 @@ Estrategia: Oracle numeris
 4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
    TP: cuando el precio sube usdt 100 desde el punto de entrada
-   SL: cuando el precio baja usdt 300 desde el punto de entrada
+   SL: cuando el precio baja usdt 100 desde el punto de entrada
 6) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
    TP: cuando el precio baja usdt 100 desde el punto de entrada
-   SL: cuando el precio sube usdt 300 desde el punto de entrada
-7) cerrar operacion luego de 50 min desde el punto de entrada
+   SL: cuando el precio sube usdt 100 desde el punto de entrada
+7) cerrar operacion luego de 30 min desde el punto de entrada
 
 El formato del estado actual para estrategia:
 en una linea: nombre de estrategia
@@ -172,8 +172,8 @@ class BinanceOracleNumerisBot:
         self.leverage = int(os.getenv("LEVERAGE", "1"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.take_profit_usdt = float(os.getenv("TAKE_PROFIT_USDT", "100.0"))
-        self.stop_loss_usdt = float(os.getenv("STOP_LOSS_USDT", "300.0"))
-        self.max_duration_mins = float(os.getenv("MAX_DURATION_MINUTES", "50.0"))
+        self.stop_loss_usdt = float(os.getenv("STOP_LOSS_USDT", "100.0"))
+        self.max_duration_mins = float(os.getenv("MAX_DURATION_MINUTES", "30.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
         self.strategy_name = os.getenv("STRATEGY_NAME", "Oracle numeris")
 
@@ -498,12 +498,13 @@ class BinanceOracleNumerisBot:
         1) operar las 24 hs los 7 dias de la semana
         2) hacer todos los calculos en temporalidad de 1 min
         3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-        4) entrada en long: cuando el indicador oracle numeris marca señal de compra al finalizar la vela de 1 min
-           cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada
-           no colocar SL
-        5) entrada en short: cuando el indicador oracle numeris marca señal de venta al finalizar la vela de 1 min
-           cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada
-           no colocar SL
+        4) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
+           TP: cuando el precio sube usdt 100 desde el punto de entrada
+           SL: cuando el precio baja usdt 100 desde el punto de entrada
+        5) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
+           TP: cuando el precio baja usdt 100 desde el punto de entrada
+           SL: cuando el precio sube usdt 100 desde el punto de entrada
+        6) cerrar operacion luego de 30 min desde el punto de entrada
         """
         df = self.fetch_klines(limit=120)
         default_result = {
@@ -694,11 +695,11 @@ class BinanceOracleNumerisBot:
         Reglas de salida:
         5) LONG:
            - TP: cuando el precio sube 100 USDT desde la entrada
-           - SL: cuando el precio baja 300 USDT desde la entrada
+           - SL: cuando el precio baja 100 USDT desde la entrada
         6) SHORT:
            - TP: cuando el precio baja 100 USDT desde la entrada
-           - SL: cuando el precio sube 300 USDT desde la entrada
-        7) Tiempo máximo: cerrar operación luego de 50 min desde el punto de entrada
+           - SL: cuando el precio sube 100 USDT desde la entrada
+        7) Tiempo máximo: cerrar operación luego de 30 min desde el punto de entrada
         """
         if not self.current_position or self.entry_price <= 0:
             return False, None
@@ -959,18 +960,16 @@ class BinanceOracleNumerisBot:
                 )
 
                 # 4. Lógica de salidas:
-                # - Long: cerrar operacion cuando el precio bajo usdt 100 desde el punto de entrada (no colocar SL)
-                # - Short: cerrar operacion cuando el precio sube usdt 100 desde el punto de entrada (no colocar SL)
+                # - Long: TP +100 USDT, SL -100 USDT, Max 30 min
+                # - Short: TP -100 USDT, SL +100 USDT, Max 30 min
                 should_close, close_reason = self.check_exit_condition(curr_price)
                 if active_pos and should_close:
                     self.close_position(curr_price, reason=close_reason)
                     active_pos = None
 
                 # 5. Lógica de entradas:
-                # 1) operar las 24 hs los 7 dias de la semana
-                # 3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-                # 4) entrada en long: cuando el indicador oracle numeris marca señal de compra al finalizar la vela de 1 min
-                # 5) entrada en short: cuando el indicador oracle numeris marca señal de venta al finalizar la vela de 1 min
+                # - Inmediatamente al detectar señal del indicador Oracle Numeris
+                # - Una sola entrada a la vez
                 if active_pos is None and strat_data['entry_signal']:
                     signal = strat_data['entry_signal']
                     self.open_position(side=signal, current_price=curr_price)
