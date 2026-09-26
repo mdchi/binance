@@ -1,6 +1,7 @@
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
-MARGIN_USDT=5.0
+# Monto: '100%' o 'ALL' para usar el total del saldo disponible de la cuenta en futuros
+MARGIN_USDT=100%
 LEVERAGE=1
 MARGIN_TYPE=ISOLATED
 

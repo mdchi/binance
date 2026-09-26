@@ -5,10 +5,10 @@ Bot de trading automatico en Binance.com
 
 Modo Aislado
 Apalancamiento 1x 
-Monto 5 usdt
+Monto el 100% de usdt de la cuenta futuros
 
 Estrategia: Oracle numeris
-1) extraer los datos del indicador oracle numeris directamente de tradingview
+1) obtener señales de compra y venta del indicador oracle numeris localmente desde python
 2) operar las 24 hs los 7 dias de la semana
 3) hacer todos los calculos en temporalidad de 1 min
 4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
@@ -160,7 +160,14 @@ class BinanceOracleNumerisBot:
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
+        raw_margin = os.getenv("MARGIN_USDT", "100%").strip()
+        self.use_all_balance = raw_margin.upper() in ("100%", "ALL", "TOTAL", "MAX")
+        try:
+            self.margin_usdt = float(raw_margin.replace("%", "")) if not self.use_all_balance else 0.0
+        except ValueError:
+            self.margin_usdt = 0.0
+            self.use_all_balance = True
+
         self.leverage = int(os.getenv("LEVERAGE", "1"))
         self.timeframe = os.getenv("TIMEFRAME", "1m")
         self.close_diff_usdt = float(os.getenv("CLOSE_DIFF_USDT", "100.0"))
@@ -184,6 +191,8 @@ class BinanceOracleNumerisBot:
         self.min_qty = 0.001
         self.tick_size = 0.01
         self.step_size = 0.001
+        self.last_execution_error = None
+        self.actual_margin_used = 0.0
 
         # Control de velas cerradas (para evitar repetición de señales en la misma vela)
         self.last_evaluated_candle_time = None
@@ -600,11 +609,35 @@ class BinanceOracleNumerisBot:
             return self.current_position, self.entry_price, self.position_qty
 
     def open_position(self, side, current_price):
-        """Ejecuta apertura de posición LONG o SHORT en Binance Futures a precio MARKET."""
-        notional_val = self.margin_usdt * self.leverage
-        qty = self._format_quantity(notional_val / current_price)
+        """Ejecuta apertura de posición LONG o SHORT en Binance Futures a precio MARKET usando hasta el 100% de la cuenta."""
+        if self.use_all_balance:
+            if not self.dry_run and self.client:
+                try:
+                    acc = self.client.futures_account()
+                    avail = float(acc.get('availableBalance', 0.0))
+                    # Buffer de seguridad para comisiones de futuros (98.5% del saldo disponible)
+                    usable = max(0.0, avail * 0.985)
+                except Exception as e:
+                    logging.error(f"Error consultando saldo disponible: {e}")
+                    usable = 0.0
+            else:
+                usable = self.simulated_balance * 0.985
 
-        logging.info(f"EJECUTANDO ENTRADA {side}: Monto {self.margin_usdt} USDT x {self.leverage}x = {notional_val} USDT ({qty} {self.symbol}) a ~${current_price:.2f}")
+            if usable <= 0:
+                self.last_execution_error = "Saldo insuficiente en cuenta de futuros"
+                logging.warning(self.last_execution_error)
+                return False
+
+            notional_val = usable * self.leverage
+            calc_margin = usable
+        else:
+            notional_val = self.margin_usdt * self.leverage
+            calc_margin = self.margin_usdt
+
+        qty = self._format_quantity(notional_val / current_price)
+        self.actual_margin_used = (qty * current_price) / self.leverage
+
+        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ~{self.actual_margin_used:.2f} USDT x {self.leverage}x = {qty * current_price:.2f} USDT ({qty} {self.symbol}) a ~${current_price:.2f}")
 
         if self.dry_run:
             self.current_position = side
@@ -613,6 +646,7 @@ class BinanceOracleNumerisBot:
             self.entry_time = datetime.now()
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
+            self.last_execution_error = None
             return True
 
         try:
@@ -640,12 +674,15 @@ class BinanceOracleNumerisBot:
             self.current_position = side
             self.entry_price = current_price
             self.position_qty = qty
+            self.actual_margin_used = (qty * current_price) / self.leverage
             self.entry_time = datetime.now()
             self.max_pnl_pct = 0.0
             self.min_pnl_pct = 0.0
+            self.last_execution_error = None
             return True
 
         except Exception as e:
+            self.last_execution_error = f"Error Binance: {e}"
             logging.error(f"Error al abrir posición en Binance Futures: {e}")
             return False
 
@@ -699,10 +736,10 @@ class BinanceOracleNumerisBot:
         # Calcular PnL de la operación con apalancamiento 1x
         if side == 'LONG':
             pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
-            pnl_usdt = self.margin_usdt * (pnl_pct / 100.0)
+            pnl_usdt = (current_price - self.entry_price) * self.position_qty
         else:
             pnl_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
-            pnl_usdt = self.margin_usdt * (pnl_pct / 100.0)
+            pnl_usdt = (self.entry_price - current_price) * self.position_qty
 
         if self.dry_run:
             self.simulated_balance += pnl_usdt
@@ -809,7 +846,8 @@ class BinanceOracleNumerisBot:
         lines.append("======================================================================")
         lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA ORACLE NUMERIS")
         lines.append("======================================================================")
-        lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
+        monto_str = "100% de la cuenta de futuros" if self.use_all_balance else f"{self.margin_usdt:.2f} USDT"
+        lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {monto_str}")
         lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL (Dinero Real en Binance Futures)'}")
         lines.append("----------------------------------------------------------------------")
         if has_keys:
@@ -818,6 +856,8 @@ class BinanceOracleNumerisBot:
             lines.append(f"Saldo Wallet (Simulado): {wallet_bal:.2f} USDT")
         tv_status = f"Puerto {self.webhook_port} (Activo)" if self.webhook_enabled else "Desactivado"
         lines.append(f"TradingView Webhook: {tv_status} | Ultima senal TV: {self.last_tv_signal}")
+        if self.last_execution_error:
+            lines.append(f"Aviso Ejecucion: {self.last_execution_error}")
         lines.append(f"Resumen: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 
