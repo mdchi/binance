@@ -9,7 +9,7 @@ Monto el 100% de usdt de la cuenta futuros
 
 Estrategia: Oracle numeris
 1) obtener señales de compra y venta del indicador oracle numeris localmente desde python
-2) operar las 24 hs los 7 dias de la semana
+2) operar de 10 a 14 hs (horario buenos aires) unicamente los dias que esta abierta la bolsa de new york
 3) hacer todos los calculos en temporalidad de 1 min
 4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
@@ -47,13 +47,142 @@ import sys
 import time
 import math
 import logging
-from datetime import datetime
+from datetime import datetime, date, time as dt_time, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 import json
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
+
+# Zona horaria de Buenos Aires y NYSE (New York)
+TZ_BA = ZoneInfo("America/Argentina/Buenos_Aires")
+TZ_NY = ZoneInfo("America/New_York")
+
+
+def is_nyse_holiday(d: date) -> bool:
+    """Verifica si una fecha determinada es feriado oficial en la Bolsa de New York (NYSE)."""
+    year = d.year
+    month = d.month
+    day = d.day
+    weekday = d.weekday()  # 0: Lunes, 4: Viernes, 5: Sábado, 6: Domingo
+
+    # 1. Año Nuevo (1 de Enero). Si cae domingo -> lunes 2. Si cae sábado -> viernes 31 dic previo
+    if month == 1 and day == 1:
+        return True
+    if month == 1 and day == 2 and weekday == 0:
+        return True
+    if month == 12 and day == 31 and weekday == 4:
+        return True
+
+    # 2. Martin Luther King Jr. Day (3er lunes de enero)
+    if month == 1 and weekday == 0 and 15 <= day <= 21:
+        return True
+
+    # 3. Washington's Birthday / Presidents' Day (3er lunes de febrero)
+    if month == 2 and weekday == 0 and 15 <= day <= 21:
+        return True
+
+    # 4. Good Friday (Viernes Santo - algoritmo eclesiástico de Pascua)
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d_div = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d_div - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    easter_month = (h + l - 7 * m + 114) // 31
+    easter_day = ((h + l - 7 * m + 114) % 31) + 1
+    easter_sunday = date(year, easter_month, easter_day)
+    good_friday = easter_sunday - timedelta(days=2)
+    if d == good_friday:
+        return True
+
+    # 5. Memorial Day (Último lunes de mayo)
+    if month == 5 and weekday == 0 and day >= 25:
+        return True
+
+    # 6. Juneteenth National Independence Day (19 de junio, oficial desde 2021)
+    if year >= 2021:
+        if month == 6 and day == 19:
+            return True
+        if month == 6 and day == 20 and weekday == 0:
+            return True
+        if month == 6 and day == 18 and weekday == 4:
+            return True
+
+    # 7. Día de la Independencia (4 de julio)
+    if month == 7 and day == 4:
+        return True
+    if month == 7 and day == 5 and weekday == 0:
+        return True
+    if month == 7 and day == 3 and weekday == 4:
+        return True
+
+    # 8. Labor Day (1er lunes de septiembre)
+    if month == 9 and weekday == 0 and day <= 7:
+        return True
+
+    # 9. Thanksgiving Day (4to jueves de noviembre)
+    if month == 11 and weekday == 3 and 22 <= day <= 28:
+        return True
+
+    # 10. Navidad (25 de diciembre)
+    if month == 12 and day == 25:
+        return True
+    if month == 12 and day == 26 and weekday == 0:
+        return True
+    if month == 12 and day == 24 and weekday == 4:
+        return True
+
+    return False
+
+
+def is_nyse_open_day(d: date) -> bool:
+    """Verifica si la Bolsa de New York opera en el día dado (Lunes a Viernes no feriados)."""
+    if d.weekday() >= 5:  # Sábado (5) o Domingo (6)
+        return False
+    return not is_nyse_holiday(d)
+
+
+def check_trading_window(start_hour=10, end_hour=14):
+    """
+    Evalúa si el momento actual está dentro de la ventana de operaciones permitida:
+    - De 10 a 14 hs (Horario de Buenos Aires).
+    - Únicamente los días en que está abierta la Bolsa de New York (NYSE).
+    Retorna: (is_allowed: bool, status_desc: str, ba_now: datetime)
+    """
+    ba_now = datetime.now(TZ_BA)
+    curr_date = ba_now.date()
+
+    if not is_nyse_open_day(curr_date):
+        if curr_date.weekday() >= 5:
+            reason = "NYSE Cerrada (Fin de semana)"
+        else:
+            reason = "NYSE Cerrada (Feriado bursatil EE.UU.)"
+        status_desc = f"Fuera de horario: {reason} | 10:00 a 14:00 (Buenos Aires)"
+        return False, status_desc, ba_now
+
+    # Ventana 10:00:00 a 14:00:00 en Buenos Aires
+    t_start = dt_time(start_hour, 0, 0)
+    t_end = dt_time(end_hour, 0, 0)
+    curr_t = ba_now.time()
+
+    if t_start <= curr_t < t_end:
+        status_desc = f"En horario operativo (10:00 a 14:00 BA | NYSE Abierta)"
+        return True, status_desc, ba_now
+    else:
+        status_desc = f"Fuera de horario operativo (10:00 a 14:00 BA | NYSE Abierta)"
+        return False, status_desc, ba_now
 
 # 1. Configuración de consola Windows para soporte ANSI/VT
 if os.name == 'nt':
@@ -176,6 +305,8 @@ class BinanceOracleNumerisBot:
         self.max_duration_mins = float(os.getenv("MAX_DURATION_MINUTES", "30.0"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
         self.strategy_name = os.getenv("STRATEGY_NAME", "Oracle numeris")
+        self.trading_start_hour = int(os.getenv("TRADING_START_HOUR", "10"))
+        self.trading_end_hour = int(os.getenv("TRADING_END_HOUR", "14"))
 
         # Parámetros del indicador Oracle Numeris configurables en .envpublico
         self.oracle_ema_fast = int(os.getenv("ORACLE_EMA_FAST", "9"))
@@ -246,7 +377,7 @@ class BinanceOracleNumerisBot:
 
     def _initialize_client(self):
         """Inicializa cliente Binance, configura modo AISLADO 1x y cierra posiciones abiertas iniciales."""
-        logging.info("Iniciando Bot Binance Oracle Numeris (24/7)...")
+        logging.info("Iniciando Bot Binance Oracle Numeris (10:00 a 14:00 Buenos Aires - Dias NYSE)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -495,24 +626,32 @@ class BinanceOracleNumerisBot:
     def analyze_strategy(self):
         """
         Estrategia: Oracle numeris
-        1) operar las 24 hs los 7 dias de la semana
-        2) hacer todos los calculos en temporalidad de 1 min
-        3) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-        4) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
+        1) obtener señales de compra y venta del indicador oracle numeris localmente desde python
+        2) operar de 10 a 14 hs (horario buenos aires) unicamente los dias que esta abierta la bolsa de new york
+        3) hacer todos los calculos en temporalidad de 1 min
+        4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+        5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
            TP: cuando el precio sube usdt 100 desde el punto de entrada
            SL: cuando el precio baja usdt 100 desde el punto de entrada
-        5) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
+        6) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
            TP: cuando el precio baja usdt 100 desde el punto de entrada
            SL: cuando el precio sube usdt 100 desde el punto de entrada
-        6) cerrar operacion luego de 30 min desde el punto de entrada
+        7) cerrar operacion luego de 30 min desde el punto de entrada
         """
+        is_window, schedule_status, ba_now = check_trading_window(
+            self.trading_start_hour, self.trading_end_hour
+        )
+
         df = self.fetch_klines(limit=120)
         default_result = {
             'strategy_name': self.strategy_name,
             'current_price': 0.0,
             'oracle_signal': 'NEUTRAL',
             'entry_signal': None,
-            'candle_time': None
+            'candle_time': None,
+            'is_trading_window': is_window,
+            'schedule_status': schedule_status,
+            'ba_now': ba_now
         }
 
         if df is None or len(df) < 55:
@@ -864,7 +1003,9 @@ class BinanceOracleNumerisBot:
             pos_line_str = "SIN POSICION"
 
         curr_price_str = f"${curr_price:.2f}"
-        horario_str = f"Operando 24/7 continuo | Hora actual: {now_dt.strftime('%Y-%m-%d %H:%M:%S')}"
+        ba_now = strat_data.get('ba_now', now_dt)
+        sched_status = strat_data.get('schedule_status', '')
+        horario_str = f"{sched_status} | Hora actual BA: {ba_now.strftime('%Y-%m-%d %H:%M:%S')}"
 
         # Construcción del texto monocromo (sin códigos de colores ANSI)
         lines = []
@@ -903,8 +1044,8 @@ class BinanceOracleNumerisBot:
         sys.stdout.flush()
 
     def run(self):
-        """Bucle principal de ejecución del bot 24/7 en velas de 1 minuto."""
-        logging.info("Bucle principal de monitoreo Oracle Numeris 24/7 iniciado.")
+        """Bucle principal de ejecución del bot (10:00 a 14:00 Buenos Aires en días NYSE) en velas de 1 minuto."""
+        logging.info("Bucle principal de monitoreo Oracle Numeris iniciado (10:00 a 14:00 BA en dias NYSE).")
 
         while True:
             try:
@@ -968,9 +1109,10 @@ class BinanceOracleNumerisBot:
                     active_pos = None
 
                 # 5. Lógica de entradas:
+                # - Operar de 10 a 14 hs (Buenos Aires) únicamente los días que está abierta la NYSE
                 # - Inmediatamente al detectar señal del indicador Oracle Numeris
                 # - Una sola entrada a la vez
-                if active_pos is None and strat_data['entry_signal']:
+                if active_pos is None and strat_data.get('is_trading_window', False) and strat_data['entry_signal']:
                     signal = strat_data['entry_signal']
                     self.open_position(side=signal, current_price=curr_price)
 

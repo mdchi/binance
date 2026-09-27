@@ -16,6 +16,10 @@ TAKE_PROFIT_USDT=100.0
 STOP_LOSS_USDT=100.0
 MAX_DURATION_MINUTES=30.0
 
+# Horario Operativo (Horario Buenos Aires: 10 a 14 hs únicamente en días hábiles de NYSE)
+TRADING_START_HOUR=10
+TRADING_END_HOUR=14
+
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
 USE_TESTNET=False
