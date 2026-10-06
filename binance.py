@@ -4,21 +4,24 @@
 Bot de trading automatico en Binance.com
 
 Modo Aislado
-Apalancamiento 1x 
-Monto el 100% de usdt de la cuenta futuros
+Apalancamiento 10x 
+Monto: 5 usdt
 
-Estrategia: Oracle numeris
-1) obtener señales de compra y venta del indicador oracle numeris localmente desde python
-2) operar de 10 a 14 hs (horario buenos aires) unicamente los dias que esta abierta la bolsa de new york
-3) hacer todos los calculos en temporalidad de 1 min
-4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
-   TP: cuando el precio sube usdt 100 desde el punto de entrada
-   SL: cuando el precio baja usdt 100 desde el punto de entrada
-6) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
-   TP: cuando el precio baja usdt 100 desde el punto de entrada
-   SL: cuando el precio sube usdt 100 desde el punto de entrada
-7) cerrar operacion luego de 30 min desde el punto de entrada
+Estrategia: Vela apertura
+1) analizar la vela apertura en temporalidad 1 min
+2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
+
+3) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana)
+4) analizar vela apertura de bolsa tokio 21 hs (horario buenos aires por la noche)
+5) analizar vela apertura de bolsa euronext 4 hs (horario buenos aires por la madrugada)
+
+6) entrada en long: si la vela apertura analizada es una vela roja
+   TP: 10% de ganancia
+   sin SL
+
+7) entrada en short: si la vela apertura analizada es una vela verde
+   TP: 10% de ganancia
+   sin SL
 
 El formato del estado actual para estrategia:
 en una linea: nombre de estrategia
@@ -52,137 +55,10 @@ try:
     from zoneinfo import ZoneInfo
 except ImportError:
     from backports.zoneinfo import ZoneInfo
-import json
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import pandas as pd
-import numpy as np
 from dotenv import load_dotenv
 
-# Zona horaria de Buenos Aires y NYSE (New York)
+# Zona horaria de Buenos Aires (UTC-3)
 TZ_BA = ZoneInfo("America/Argentina/Buenos_Aires")
-TZ_NY = ZoneInfo("America/New_York")
-
-
-def is_nyse_holiday(d: date) -> bool:
-    """Verifica si una fecha determinada es feriado oficial en la Bolsa de New York (NYSE)."""
-    year = d.year
-    month = d.month
-    day = d.day
-    weekday = d.weekday()  # 0: Lunes, 4: Viernes, 5: Sábado, 6: Domingo
-
-    # 1. Año Nuevo (1 de Enero). Si cae domingo -> lunes 2. Si cae sábado -> viernes 31 dic previo
-    if month == 1 and day == 1:
-        return True
-    if month == 1 and day == 2 and weekday == 0:
-        return True
-    if month == 12 and day == 31 and weekday == 4:
-        return True
-
-    # 2. Martin Luther King Jr. Day (3er lunes de enero)
-    if month == 1 and weekday == 0 and 15 <= day <= 21:
-        return True
-
-    # 3. Washington's Birthday / Presidents' Day (3er lunes de febrero)
-    if month == 2 and weekday == 0 and 15 <= day <= 21:
-        return True
-
-    # 4. Good Friday (Viernes Santo - algoritmo eclesiástico de Pascua)
-    a = year % 19
-    b = year // 100
-    c = year % 100
-    d_div = b // 4
-    e = b % 4
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d_div - g + 15) % 30
-    i = c // 4
-    k = c % 4
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    easter_month = (h + l - 7 * m + 114) // 31
-    easter_day = ((h + l - 7 * m + 114) % 31) + 1
-    easter_sunday = date(year, easter_month, easter_day)
-    good_friday = easter_sunday - timedelta(days=2)
-    if d == good_friday:
-        return True
-
-    # 5. Memorial Day (Último lunes de mayo)
-    if month == 5 and weekday == 0 and day >= 25:
-        return True
-
-    # 6. Juneteenth National Independence Day (19 de junio, oficial desde 2021)
-    if year >= 2021:
-        if month == 6 and day == 19:
-            return True
-        if month == 6 and day == 20 and weekday == 0:
-            return True
-        if month == 6 and day == 18 and weekday == 4:
-            return True
-
-    # 7. Día de la Independencia (4 de julio)
-    if month == 7 and day == 4:
-        return True
-    if month == 7 and day == 5 and weekday == 0:
-        return True
-    if month == 7 and day == 3 and weekday == 4:
-        return True
-
-    # 8. Labor Day (1er lunes de septiembre)
-    if month == 9 and weekday == 0 and day <= 7:
-        return True
-
-    # 9. Thanksgiving Day (4to jueves de noviembre)
-    if month == 11 and weekday == 3 and 22 <= day <= 28:
-        return True
-
-    # 10. Navidad (25 de diciembre)
-    if month == 12 and day == 25:
-        return True
-    if month == 12 and day == 26 and weekday == 0:
-        return True
-    if month == 12 and day == 24 and weekday == 4:
-        return True
-
-    return False
-
-
-def is_nyse_open_day(d: date) -> bool:
-    """Verifica si la Bolsa de New York opera en el día dado (Lunes a Viernes no feriados)."""
-    if d.weekday() >= 5:  # Sábado (5) o Domingo (6)
-        return False
-    return not is_nyse_holiday(d)
-
-
-def check_trading_window(start_hour=10, end_hour=14):
-    """
-    Evalúa si el momento actual está dentro de la ventana de operaciones permitida:
-    - De 10 a 14 hs (Horario de Buenos Aires).
-    - Únicamente los días en que está abierta la Bolsa de New York (NYSE).
-    Retorna: (is_allowed: bool, status_desc: str, ba_now: datetime)
-    """
-    ba_now = datetime.now(TZ_BA)
-    curr_date = ba_now.date()
-
-    if not is_nyse_open_day(curr_date):
-        if curr_date.weekday() >= 5:
-            reason = "NYSE Cerrada (Fin de semana)"
-        else:
-            reason = "NYSE Cerrada (Feriado bursatil EE.UU.)"
-        status_desc = f"Fuera de horario: {reason} | 10:00 a 14:00 (Buenos Aires)"
-        return False, status_desc, ba_now
-
-    # Ventana 10:00:00 a 14:00:00 en Buenos Aires
-    t_start = dt_time(start_hour, 0, 0)
-    t_end = dt_time(end_hour, 0, 0)
-    curr_t = ba_now.time()
-
-    if t_start <= curr_t < t_end:
-        status_desc = f"En horario operativo (10:00 a 14:00 BA | NYSE Abierta)"
-        return True, status_desc, ba_now
-    else:
-        status_desc = f"Fuera de horario operativo (10:00 a 14:00 BA | NYSE Abierta)"
-        return False, status_desc, ba_now
 
 # 1. Configuración de consola Windows para soporte ANSI/VT
 if os.name == 'nt':
@@ -193,7 +69,7 @@ if hasattr(sys.stdout, 'reconfigure'):
     except Exception:
         pass
 
-# 2. Configuración de Logging a bot.log (para mantener la consola limpia y monocroma)
+# 2. Configuración de Logging a bot.log (para mantener la pantalla limpia de texto no deseado)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -211,7 +87,7 @@ for env_pub in [".envpublico", "envpublico", ".env", "env"]:
     if os.path.exists(env_pub):
         load_dotenv(env_pub)
 
-# 4. Importar biblioteca python-binance evitando conflicto con el nombre de archivo local
+# 4. Importar biblioteca python-binance evitando colisión con el nombre de archivo binance.py
 import importlib
 local_bin_module = sys.modules.pop('binance', None)
 sys_path_bak = list(sys.path)
@@ -228,61 +104,7 @@ finally:
         sys.modules['binance'] = local_bin_module
 
 
-class TradingViewWebhookHandler(BaseHTTPRequestHandler):
-    """Manejador HTTP para recibir alertas y señales directamente de TradingView vía Webhook."""
-    bot_instance = None
-
-    def log_message(self, format, *args):
-        # Redirigir logs HTTP a bot.log para mantener la pantalla de consola limpia
-        logging.info("TradingView Webhook HTTP: " + (format % args))
-
-    def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
-        post_data = self.rfile.read(content_length)
-
-        try:
-            payload = {}
-            if post_data:
-                try:
-                    payload = json.loads(post_data.decode('utf-8'))
-                except Exception:
-                    # En caso de texto plano en vez de JSON
-                    text_content = post_data.decode('utf-8', errors='ignore').strip()
-                    payload = {'action': text_content, 'raw': text_content}
-
-            if self.bot_instance:
-                success, msg = self.bot_instance.process_tradingview_webhook(payload)
-                if success:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(json.dumps({'status': 'ok', 'message': msg}).encode('utf-8'))
-                else:
-                    self.send_response(400)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(json.dumps({'status': 'error', 'message': msg}).encode('utf-8'))
-            else:
-                self.send_response(503)
-                self.end_headers()
-        except Exception as e:
-            logging.error(f"Error procesando webhook de TradingView: {e}")
-            self.send_response(500)
-            self.end_headers()
-
-    def do_GET(self):
-        """Endpoint de verificación de salud del servidor Webhook."""
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.end_headers()
-        self.wfile.write(json.dumps({
-            'status': 'online',
-            'bot': 'Binance Oracle Numeris TradingView Webhook',
-            'symbol': self.bot_instance.symbol if self.bot_instance else 'N/A'
-        }).encode('utf-8'))
-
-
-class BinanceOracleNumerisBot:
+class BinanceOpeningCandleBot:
     def __init__(self):
         # Claves API desde .envprivado
         self.api_key = os.getenv("BINANCE_API_KEY", "").strip()
@@ -290,35 +112,29 @@ class BinanceOracleNumerisBot:
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        raw_margin = os.getenv("MARGIN_USDT", "100%").strip()
-        self.use_all_balance = raw_margin.upper() in ("100%", "ALL", "TOTAL", "MAX")
-        try:
-            self.margin_usdt = float(raw_margin.replace("%", "")) if not self.use_all_balance else 0.0
-        except ValueError:
-            self.margin_usdt = 0.0
-            self.use_all_balance = True
-
-        self.leverage = int(os.getenv("LEVERAGE", "1"))
+        self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
+        self.leverage = int(os.getenv("LEVERAGE", "10"))
+        self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
+        self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.take_profit_usdt = float(os.getenv("TAKE_PROFIT_USDT", "100.0"))
-        self.stop_loss_usdt = float(os.getenv("STOP_LOSS_USDT", "100.0"))
-        self.max_duration_mins = float(os.getenv("MAX_DURATION_MINUTES", "30.0"))
-        self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "2"))
-        self.strategy_name = os.getenv("STRATEGY_NAME", "Oracle numeris")
-        self.trading_start_hour = int(os.getenv("TRADING_START_HOUR", "10"))
-        self.trading_end_hour = int(os.getenv("TRADING_END_HOUR", "14"))
-
-        # Parámetros del indicador Oracle Numeris configurables en .envpublico
-        self.oracle_ema_fast = int(os.getenv("ORACLE_EMA_FAST", "9"))
-        self.oracle_ema_slow = int(os.getenv("ORACLE_EMA_SLOW", "21"))
-        self.oracle_vol_factor = float(os.getenv("ORACLE_VOL_FACTOR", "1.2"))
-        self.oracle_momentum_len = int(os.getenv("ORACLE_MOMENTUM_LEN", "14"))
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "10.0"))
+        self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "1.0"))
 
         # Modos de ejecución (dinero real por defecto)
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Cliente Binance y reglas de precisión
+        # Configuración de sesiones bursátiles (Horario Buenos Aires)
+        # Formato: name: 'EURONEXT', hour: 4, minute: 0
+        #          name: 'NEW YORK', hour: 10, minute: 30
+        #          name: 'TOKIO',    hour: 21, minute: 0
+        self.sessions = [
+            {"bolsa": "EURONEXT", "hour": 4, "minute": 0},
+            {"bolsa": "NEW YORK", "hour": 10, "minute": 30},
+            {"bolsa": "TOKIO", "hour": 21, "minute": 0}
+        ]
+
+        # Cliente Binance y reglas de precisión de mercado
         self.client = None
         self.price_precision = 2
         self.qty_precision = 3
@@ -328,57 +144,49 @@ class BinanceOracleNumerisBot:
         self.last_execution_error = None
         self.actual_margin_used = 0.0
 
-        # Control de velas cerradas (para evitar repetición de señales en la misma vela)
-        self.last_evaluated_candle_time = None
+        # Control de velas analizadas (clave: "YYYY-MM-DD_BOLSA")
+        self.processed_sessions = set()
 
-        # Estado de la posición activa (una sola entrada a la vez)
+        # Estado de posición activa (una sola entrada a la vez)
         self.current_position = None  # None, 'LONG', 'SHORT'
         self.entry_price = 0.0
         self.position_qty = 0.0
         self.entry_time = None
-        self.simulated_balance = 100.0
+        self.entry_bolsa = "DESCONOCIDA"
+        self.simulated_balance = 50.0
 
         # Métricas de la operación en curso
-        self.max_pnl_pct = 0.0
-        self.min_pnl_pct = 0.0
+        self.max_gain_pct = 0.0
+        self.max_loss_pct = 0.0
 
-        # Métricas de la sesión
+        # Métricas históricas de la sesión
         self.bot_start_time = time.time()
         self.winning_trades = 0
         self.losing_trades = 0
         self.money_won = 0.0
         self.money_lost = 0.0
 
-        # Integración directa de señales de TradingView vía Webhook HTTP
-        self.webhook_enabled = os.getenv("WEBHOOK_ENABLED", "True").lower() in ("true", "1", "yes")
-        self.webhook_host = os.getenv("WEBHOOK_HOST", "0.0.0.0")
-        self.webhook_port = int(os.getenv("WEBHOOK_PORT", "80"))
-        self.webhook_passphrase = os.getenv("WEBHOOK_PASSPHRASE", "oracle_numeris_secret")
-        self.webhook_signal_queue = []
-        self.webhook_server = None
-        self.webhook_server_thread = None
-        self.last_tv_signal = "ESPERANDO"
-        self.last_tv_signal_time = None
-
-        # Inicialización de archivos y cliente
+        # Inicialización de archivos y conexión
         self._init_trade_log_files()
         self._initialize_client()
 
     def _init_trade_log_files(self):
-        """DETALLES 2: Inicializar 2ganadas.txt y 2perdidas.txt con columnas alineadas."""
-        header = "Dia        | Hora     | Bolsa    | % Ganancia Max | % Perdida Max | Duracion  \n--------------------------------------------------------------------------------\n"
+        """DETALLES 2: Inicializar 2ganadas.txt y 2perdidas.txt con encabezados y columnas alineadas."""
+        header = f"{'Dia':<10} | {'Hora':<8} | {'Bolsa':<10} | {'% Ganancia Max':<15} | {'% Perdida Max':<15} | {'Duracion':<10}\n"
+        separator = "-" * 82 + "\n"
         for filename in ["2ganadas.txt", "2perdidas.txt"]:
             if not os.path.exists(filename) or os.path.getsize(filename) == 0:
                 try:
                     with open(filename, "w", encoding="utf-8") as f:
                         f.write(header)
+                        f.write(separator)
                 except Exception as e:
                     logging.error(f"Error inicializando {filename}: {e}")
 
     def _initialize_client(self):
-        """Inicializa cliente Binance, configura modo AISLADO 1x y cierra posiciones abiertas iniciales."""
-        logging.info("Iniciando Bot Binance Oracle Numeris (10:00 a 14:00 Buenos Aires - Dias NYSE)...")
-        logging.info(f"Símbolo: {self.symbol} | Margen: AISLADO | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
+        """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones previas."""
+        logging.info("Iniciando Bot Binance Vela apertura...")
+        logging.info(f"Símbolo: {self.symbol} | Margen: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
             if self.api_key and self.api_secret:
@@ -395,7 +203,7 @@ class BinanceOracleNumerisBot:
                 self._setup_futures_account()
                 logging.info("Conexión autenticada exitosamente a Binance Futures API con dinero real.")
             else:
-                logging.info("Modo de simulación (DRY-RUN) activo o sin API keys.")
+                logging.info("Modo de simulación (DRY-RUN) activo o sin API keys configuradas.")
 
             # DETALLES 1: Cerrar posiciones abiertas al iniciar bot
             self.close_existing_positions()
@@ -403,15 +211,11 @@ class BinanceOracleNumerisBot:
         except Exception as e:
             logging.error(f"Error al inicializar cliente Binance: {e}")
             if not self.dry_run:
-                logging.info("Cambiando automáticamente a modo DRY-RUN por error de conexión.")
+                logging.info("Cambiando automáticamente a modo DRY-RUN debido a error de autenticación/conexión.")
                 self.dry_run = True
 
-        # Iniciar servidor Webhook local para recibir señales de TradingView
-        if self.webhook_enabled:
-            self._start_webhook_server()
-
     def _update_symbol_precision(self):
-        """Obtiene precisión de precio y cantidad para el símbolo."""
+        """Obtiene precisión de precio y lot size para el símbolo desde Binance Futures."""
         try:
             info = self.client.futures_exchange_info()
             for s in info.get('symbols', []):
@@ -426,7 +230,7 @@ class BinanceOracleNumerisBot:
                             self.qty_precision = self._precision_from_step(f['stepSize'])
                     break
         except Exception as e:
-            logging.warning(f"No se pudieron obtener precisiones dinámicas ({e}). Usando valores por defecto.")
+            logging.warning(f"No se pudieron consultar filtros dinámicos de {self.symbol} ({e}). Usando valores por defecto.")
 
     @staticmethod
     def _precision_from_step(step_str):
@@ -443,14 +247,15 @@ class BinanceOracleNumerisBot:
         return max(rounded, self.min_qty)
 
     def _setup_futures_account(self):
-        """Configura margen AISLADO y apalancamiento 1x en Binance Futures."""
+        """Configura margen AISLADO (ISOLATED) y apalancamiento 10x en Binance Futures."""
         try:
             try:
                 self.client.futures_change_margin_type(symbol=self.symbol, marginType='ISOLATED')
                 logging.info(f"Margen configurado a ISOLATED para {self.symbol}.")
             except BinanceAPIException as e:
+                # Código -4046: No need to change margin type
                 if e.code != -4046 and "No need to change" not in str(e):
-                    logging.warning(f"Nota sobre margen aislado: {e.message}")
+                    logging.warning(f"Nota de configuración de margen aislado: {e.message}")
 
             self.client.futures_change_leverage(symbol=self.symbol, leverage=self.leverage)
             logging.info(f"Apalancamiento configurado a {self.leverage}x para {self.symbol}.")
@@ -458,34 +263,34 @@ class BinanceOracleNumerisBot:
             logging.error(f"Error configurando cuenta de futuros: {e}")
 
     def close_existing_positions(self):
-        """DETALLES 1: Cerrar posiciones abiertas al iniciar bot y cancelar órdenes previas."""
-        logging.info("DETALLES 1: Verificando y cerrando posiciones abiertas al iniciar bot...")
+        """DETALLES 1: Cerrar posiciones abiertas al iniciar bot."""
+        logging.info("DETALLES 1: Verificando y cerrando cualquier posición abierta al iniciar el bot...")
         if self.dry_run:
             self.current_position = None
             self.entry_price = 0.0
             self.position_qty = 0.0
             self.entry_time = None
-            self.max_pnl_pct = 0.0
-            self.min_pnl_pct = 0.0
-            logging.info("Modo Simulación: Posición inicial limpia.")
+            self.max_gain_pct = 0.0
+            self.max_loss_pct = 0.0
             return
 
         if not self.client or not self.api_key or not self.api_secret:
             return
 
         try:
-            # Cancelar órdenes pendientes previas
+            # Cancelar órdenes pendientes existentes
             try:
                 self.client.futures_cancel_all_open_orders(symbol=self.symbol)
             except Exception as e:
-                logging.warning(f"Nota al cancelar órdenes abiertas previas: {e}")
+                logging.warning(f"Nota cancelando órdenes previas: {e}")
 
+            # Cancelar posibles órdenes condicionales
             try:
                 self.client._request_futures_api("delete", "algoOpenOrders", signed=True, data={"symbol": self.symbol})
-            except Exception as e:
-                logging.warning(f"Nota al cancelar órdenes algo previas: {e}")
+            except Exception:
+                pass
 
-            # Buscar y cerrar posiciones de mercado activas
+            # Detectar y cerrar posición activa
             positions = self.client.futures_position_information(symbol=self.symbol)
             closed_any = False
             for pos in positions:
@@ -494,8 +299,7 @@ class BinanceOracleNumerisBot:
                     side_to_close = 'SELL' if amt > 0 else 'BUY'
                     qty = self._format_quantity(abs(amt))
                     pos_type = 'LONG' if amt > 0 else 'SHORT'
-                    logging.info(f"Posición previa detectada ({pos_type} {qty} {self.symbol}). Cerrando a MARKET...")
-
+                    logging.info(f"Cerrando posición previa {pos_type} de {qty} {self.symbol}...")
                     self.client.futures_create_order(
                         symbol=self.symbol,
                         side=side_to_close,
@@ -504,233 +308,20 @@ class BinanceOracleNumerisBot:
                         reduceOnly=True
                     )
                     closed_any = True
-                    logging.info(f"Posición {pos_type} previa cerrada correctamente.")
+                    logging.info(f"Posición previa {pos_type} cerrada a mercado con éxito.")
 
             if not closed_any:
-                logging.info(f"Sin posiciones abiertas previas para {self.symbol}.")
+                logging.info(f"No hay posiciones abiertas previas para {self.symbol}.")
 
             self.current_position = None
             self.entry_price = 0.0
             self.position_qty = 0.0
             self.entry_time = None
-            self.max_pnl_pct = 0.0
-            self.min_pnl_pct = 0.0
+            self.max_gain_pct = 0.0
+            self.max_loss_pct = 0.0
 
         except Exception as e:
-            logging.error(f"Error al cerrar posiciones abiertas iniciales: {e}")
-
-    def _start_webhook_server(self):
-        """Inicia el servidor HTTP de Webhooks en un hilo de fondo (daemon)."""
-        try:
-            TradingViewWebhookHandler.bot_instance = self
-            self.webhook_server = HTTPServer((self.webhook_host, self.webhook_port), TradingViewWebhookHandler)
-            self.webhook_server_thread = threading.Thread(target=self.webhook_server.serve_forever, daemon=True)
-            self.webhook_server_thread.start()
-            logging.info(f"Servidor Webhook TradingView escuchando en http://{self.webhook_host}:{self.webhook_port}/")
-        except Exception as e:
-            logging.error(f"No se pudo iniciar el servidor Webhook en puerto {self.webhook_port}: {e}")
-
-    def process_tradingview_webhook(self, data):
-        """
-        Procesa el payload recibido directamente desde la alerta de TradingView.
-        Acepta formato JSON o texto con contraseña y acción (COMPRA/VENTA/BUY/SELL/LONG/SHORT).
-        """
-        # Validación opcional de contraseña de seguridad
-        req_pass = data.get('passphrase') or data.get('password') or data.get('secret') or data.get('token')
-        if self.webhook_passphrase and req_pass and req_pass != self.webhook_passphrase:
-            logging.warning("TradingView Webhook: Contraseña incorrecta rechazada.")
-            return False, "Contraseña no válida"
-
-        # Detección de acción o señal
-        action_raw = str(data.get('action') or data.get('signal') or data.get('order') or data.get('side') or data.get('raw', '')).upper()
-
-        signal = None
-        if "BUY" in action_raw or "COMPRA" in action_raw or "LONG" in action_raw:
-            signal = "LONG"
-        elif "SELL" in action_raw or "VENTA" in action_raw or "SHORT" in action_raw:
-            signal = "SHORT"
-
-        if not signal:
-            logging.warning(f"TradingView Webhook: Señal no reconocida ({action_raw})")
-            return False, f"Señal no reconocida: {action_raw}"
-
-        # Registrar recepción de la señal de TradingView
-        self.last_tv_signal = signal
-        self.last_tv_signal_time = datetime.now()
-        logging.info(f"TradingView Webhook RECIBIDO con éxito: Señal {signal} para {self.symbol} a las {self.last_tv_signal_time.strftime('%H:%M:%S')}")
-
-        # Encolar para ejecución inmediata en la siguiente iteración del bot
-        self.webhook_signal_queue.append({
-            'signal': signal,
-            'received_at': self.last_tv_signal_time,
-            'source': 'TRADINGVIEW_WEBHOOK'
-        })
-        return True, f"Señal {signal} recibida y encolada"
-
-    def fetch_klines(self, limit=120):
-        """Obtiene klines OHLCV en temporalidad de 1 minuto (1m) desde Binance Futures."""
-        try:
-            klines = self.client.futures_klines(symbol=self.symbol, interval=self.timeframe, limit=limit)
-            df = pd.DataFrame(klines, columns=[
-                'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_asset_volume', 'number_of_trades',
-                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-            ])
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
-            for col in ['open', 'high', 'low', 'close', 'volume']:
-                df[col] = df[col].astype(float)
-            return df
-        except Exception as e:
-            logging.error(f"Error al obtener klines ({self.timeframe}): {e}")
-            return None
-
-    def calculate_oracle_numeris_indicator(self, df):
-        """
-        Cálculo cuantitativo local de alta fidelidad del indicador Oracle Numeris:
-        Integra los 4 componentes técnicos del sistema Oracle Numeris:
-        1. Medias Móviles Exponenciales Direccionales:
-           - EMA Rápida (default: 9) y EMA Lenta (default: 21) parametrizables en .envpublico.
-           - EMA de Tendencia Macro (50) para filtrado de contexto.
-        2. Soporte y Resistencia Dinámicos por Volatilidad:
-           - Base SMA 20 y Bandas de Bollinger de Volatilidad (2.0 Desviaciones Estándar).
-        3. Filtro de Volumen y Presión Compradora/Vendedora:
-           - Promedio de volumen móvil (20) escalado por ORACLE_VOL_FACTOR.
-        4. Oscilador de Momentum Oracle (Oracle Oscillator):
-           - RSI Momentum con período configurable (default: 14) y línea de señal media (50).
-        """
-        # 1. Medias Móviles del indicador Oracle Numeris
-        df['ema_fast'] = df['close'].ewm(span=self.oracle_ema_fast, adjust=False).mean()
-        df['ema_slow'] = df['close'].ewm(span=self.oracle_ema_slow, adjust=False).mean()
-        df['ema_trend'] = df['close'].ewm(span=50, adjust=False).mean()
-
-        # 2. Soportes/Resistencias Dinámicos y Bandas de Volatilidad
-        df['sma20'] = df['close'].rolling(window=20).mean()
-        df['std20'] = df['close'].rolling(window=20).std()
-        df['bb_upper'] = df['sma20'] + (df['std20'] * 2.0)
-        df['bb_lower'] = df['sma20'] - (df['std20'] * 2.0)
-
-        # 3. Filtro de Volumen de actividad institucional
-        df['vol_ma'] = df['volume'].rolling(window=20).mean()
-
-        # 4. Oracle Oscillator (Momentum normalizado de flujo de órdenes)
-        delta = df['close'].diff()
-        gain = delta.clip(lower=0)
-        loss = -delta.clip(upper=0)
-        avg_gain = gain.rolling(window=self.oracle_momentum_len).mean()
-        avg_loss = loss.rolling(window=self.oracle_momentum_len).mean()
-        rs = avg_gain / avg_loss.replace(0, np.nan)
-        df['rsi'] = 100.0 - (100.0 / (1.0 + rs))
-
-        return df
-
-    def analyze_strategy(self):
-        """
-        Estrategia: Oracle numeris
-        1) obtener señales de compra y venta del indicador oracle numeris localmente desde python
-        2) operar de 10 a 14 hs (horario buenos aires) unicamente los dias que esta abierta la bolsa de new york
-        3) hacer todos los calculos en temporalidad de 1 min
-        4) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
-        5) entrada en long: inmediatamente cuando el indicador oracle numeris marca señal de compra
-           TP: cuando el precio sube usdt 100 desde el punto de entrada
-           SL: cuando el precio baja usdt 100 desde el punto de entrada
-        6) entrada en short: inmediatamente cuando el indicador oracle numeris marca señal de venta
-           TP: cuando el precio baja usdt 100 desde el punto de entrada
-           SL: cuando el precio sube usdt 100 desde el punto de entrada
-        7) cerrar operacion luego de 30 min desde el punto de entrada
-        """
-        is_window, schedule_status, ba_now = check_trading_window(
-            self.trading_start_hour, self.trading_end_hour
-        )
-
-        df = self.fetch_klines(limit=120)
-        default_result = {
-            'strategy_name': self.strategy_name,
-            'current_price': 0.0,
-            'oracle_signal': 'NEUTRAL',
-            'entry_signal': None,
-            'candle_time': None,
-            'is_trading_window': is_window,
-            'schedule_status': schedule_status,
-            'ba_now': ba_now
-        }
-
-        if df is None or len(df) < 55:
-            return default_result
-
-        df = self.calculate_oracle_numeris_indicator(df)
-
-        # Vela actual en desarrollo (tiempo real de 1 min)
-        curr_candle = df.iloc[-1]
-        prev_candle = df.iloc[-2]
-        curr_price = float(curr_candle['close'])
-        curr_candle_time = curr_candle['timestamp']
-        default_result['current_price'] = curr_price
-        default_result['candle_time'] = curr_candle_time
-
-        # Determinar señal del indicador Oracle Numeris inmediatamente con los datos actuales
-        c_close = curr_candle['close']
-        c_open = curr_candle['open']
-        c_fast = curr_candle['ema_fast']
-        c_slow = curr_candle['ema_slow']
-        c_vol = curr_candle['volume']
-        c_vol_ma = curr_candle['vol_ma']
-        c_rsi = curr_candle['rsi']
-
-        p_close = prev_candle['close']
-        p_fast = prev_candle['ema_fast']
-        p_slow = prev_candle['ema_slow']
-
-        # Detección de cruce o confirmación tendencial inmediatamente en tiempo real
-        c_bb_up = curr_candle['bb_upper']
-        c_bb_low = curr_candle['bb_lower']
-        c_sma20 = curr_candle['sma20']
-
-        # Condiciones de Compra (LONG):
-        # - Cruce alcista de EMA rápida sobre lenta, o
-        # - Tendencia alcista (fast > slow) con rebote sobre soporte/SMA20 o vela alcista fuerte con volumen y RSI en zona óptima
-        bullish_cross = (p_fast <= p_slow) and (c_fast > c_slow)
-        bullish_momentum = (c_fast > c_slow) and (c_close > c_open) and (c_rsi > 50) and (c_vol >= c_vol_ma * (self.oracle_vol_factor * 0.7))
-
-        # Condiciones de Venta (SHORT):
-        # - Cruce bajista de EMA rápida bajo lenta, o
-        # - Tendencia bajista (fast < slow) con rechazo en resistencia/SMA20 o vela bajista fuerte con volumen y RSI bajo 50
-        bearish_cross = (p_fast >= p_slow) and (c_fast < c_slow)
-        bearish_momentum = (c_fast < c_slow) and (c_close < c_open) and (c_rsi < 50) and (c_vol >= c_vol_ma * (self.oracle_vol_factor * 0.7))
-
-        oracle_signal = "NEUTRAL"
-        signal_source = "CALCULO_LOCAL"
-
-        # 1. Prioridad: Verificar si llegó señal directa del indicador Oracle Numeris desde TradingView
-        if self.webhook_signal_queue:
-            tv_item = self.webhook_signal_queue.pop(0)
-            tv_sig = tv_item['signal']
-            signal_source = "TRADINGVIEW_WEBHOOK"
-            oracle_signal = "COMPRA" if tv_sig == 'LONG' else "VENTA"
-            default_result['oracle_signal'] = oracle_signal
-            default_result['entry_signal'] = tv_sig
-            logging.info(f"Procesando senal DIRECTA de TradingView: {tv_sig} a precio ${curr_price:.2f}")
-            return default_result
-
-        # 2. Detección por cálculo cuantitativo local en tiempo real
-        if bullish_cross or (bullish_momentum and c_rsi < 72 and p_close < c_close):
-            oracle_signal = "COMPRA"
-        elif bearish_cross or (bearish_momentum and c_rsi > 28 and p_close > c_close):
-            oracle_signal = "VENTA"
-
-        default_result['oracle_signal'] = oracle_signal
-
-        # Entrada inmediata: cuando el indicador marca señal, si no se ejecutó ya en esta vela de 1 min
-        if self.last_evaluated_candle_time != curr_candle_time:
-            if oracle_signal == "COMPRA":
-                default_result['entry_signal'] = 'LONG'
-                self.last_evaluated_candle_time = curr_candle_time
-            elif oracle_signal == "VENTA":
-                default_result['entry_signal'] = 'SHORT'
-                self.last_evaluated_candle_time = curr_candle_time
-        else:
-            default_result['entry_signal'] = None
-
-        return default_result
+            logging.error(f"Error al cerrar posiciones existentes: {e}")
 
     def get_active_position(self):
         """Consulta la posición actualmente abierta en Binance Futures."""
@@ -751,49 +342,166 @@ class BinanceOracleNumerisBot:
             logging.error(f"Error consultando posiciones activas: {e}")
             return self.current_position, self.entry_price, self.position_qty
 
-    def open_position(self, side, current_price):
-        """Ejecuta apertura de posición LONG o SHORT en Binance Futures a precio MARKET usando hasta el 100% de la cuenta."""
-        if self.use_all_balance:
-            if not self.dry_run and self.client:
-                try:
-                    acc = self.client.futures_account()
-                    avail = float(acc.get('availableBalance', 0.0))
-                    # Buffer de seguridad para comisiones de futuros (98.5% del saldo disponible)
-                    usable = max(0.0, avail * 0.985)
-                except Exception as e:
-                    logging.error(f"Error consultando saldo disponible: {e}")
-                    usable = 0.0
-            else:
-                usable = self.simulated_balance * 0.985
+    def get_latest_price(self):
+        """Obtiene el precio más reciente de Binance Futures."""
+        try:
+            ticker = self.client.futures_symbol_ticker(symbol=self.symbol)
+            return float(ticker['price'])
+        except Exception as e:
+            logging.error(f"Error al consultar precio de {self.symbol}: {e}")
+            return 0.0
 
-            if usable <= 0:
-                self.last_execution_error = "Saldo insuficiente en cuenta de futuros"
-                logging.warning(self.last_execution_error)
-                return False
+    def fetch_opening_candle(self, target_dt_ba):
+        """
+        Obtiene la vela de 1 minuto correspondiente al horario de apertura especificado (horario Buenos Aires).
+        target_dt_ba: datetime con TZ_BA del minuto exacto de apertura (ej: 10:30:00).
+        Retorna: dict con {open, high, low, close, is_closed} o None.
+        """
+        try:
+            # Convertir el datetime de BA a timestamp UTC en milisegundos
+            start_ts = int(target_dt_ba.timestamp() * 1000)
+            end_ts = start_ts + 60000  # 1 minuto después
 
-            notional_val = usable * self.leverage
-            calc_margin = usable
-        else:
-            notional_val = self.margin_usdt * self.leverage
-            calc_margin = self.margin_usdt
+            klines = self.client.futures_klines(
+                symbol=self.symbol,
+                interval=self.timeframe,
+                startTime=start_ts,
+                endTime=end_ts,
+                limit=5
+            )
 
+            if not klines:
+                return None
+
+            k = klines[0]
+            candle_open_time = int(k[0])
+            open_p = float(k[1])
+            high_p = float(k[2])
+            low_p = float(k[3])
+            close_p = float(k[4])
+            candle_close_time = int(k[6])
+
+            # Verificar si la vela ya cerró (tiempo actual >= close_time)
+            # Binance close_time es timestamp_ms del final del minuto (ej: :59.999)
+            now_ms = int(time.time() * 1000)
+            is_closed = now_ms >= candle_close_time
+
+            return {
+                "open_time": candle_open_time,
+                "close_time": candle_close_time,
+                "open": open_p,
+                "high": high_p,
+                "low": low_p,
+                "close": close_p,
+                "is_closed": is_closed
+            }
+        except Exception as e:
+            logging.error(f"Error al obtener vela de apertura para {target_dt_ba}: {e}")
+            return None
+
+    def analyze_strategy(self, current_price, ba_now):
+        """
+        Evalúa las condiciones de la estrategia: Vela apertura
+        3) Euronext 04:00 hs (BA)
+        4) New York 10:30 hs (BA)
+        5) Tokio 21:00 hs (BA)
+        6) Long si la vela apertura es roja (close < open)
+        7) Short si la vela apertura es verde (close > open)
+        """
+        today_date = ba_now.date()
+
+        next_session = None
+        next_session_diff = None
+
+        signal = None
+        signal_bolsa = None
+        candle_info = None
+
+        for s in self.sessions:
+            sess_time = dt_time(s["hour"], s["minute"], 0)
+            target_dt = datetime.combine(today_date, sess_time, tzinfo=TZ_BA)
+            session_key = f"{today_date.strftime('%Y%m%d')}_{s['bolsa']}"
+
+            # Diferencia en segundos respecto a la hora de apertura
+            diff_seconds = (ba_now - target_dt).total_seconds()
+
+            # Cálculo de la próxima sesión bursátil para mostrar en pantalla
+            time_until = target_dt - ba_now
+            if time_until.total_seconds() < 0:
+                # Si ya pasó hoy, la próxima es mañana
+                target_tomorrow = target_dt + timedelta(days=1)
+                time_until = target_tomorrow - ba_now
+
+            if next_session_diff is None or time_until < next_session_diff:
+                next_session_diff = time_until
+                next_session = {
+                    "bolsa": s["bolsa"],
+                    "target_dt": target_dt,
+                    "diff": time_until
+                }
+
+            # Ventana de evaluación de la vela de apertura:
+            # La vela abre en target_dt y cierra en target_dt + 60 segundos.
+            # Verificamos entre 60 segundos y 300 segundos (5 minutos) posteriores a la apertura
+            # para asegurar que la vela cerró por completo y hacer la entrada si no se procesó.
+            if 60 <= diff_seconds <= 300:
+                if session_key not in self.processed_sessions:
+                    candle = self.fetch_opening_candle(target_dt)
+                    if candle and candle["is_closed"]:
+                        candle_info = candle
+                        if candle["close"] < candle["open"]:
+                            # Vela roja -> Entrada en LONG
+                            signal = "LONG"
+                            signal_bolsa = s["bolsa"]
+                        elif candle["close"] > candle["open"]:
+                            # Vela verde -> Entrada en SHORT
+                            signal = "SHORT"
+                            signal_bolsa = s["bolsa"]
+                        else:
+                            # Vela doji (neutra)
+                            logging.info(f"Vela de apertura {s['bolsa']} doji neutral ({candle['open']} == {candle['close']}).")
+                            self.processed_sessions.add(session_key)
+
+                        if signal:
+                            # Marcar sesión como procesada
+                            self.processed_sessions.add(session_key)
+
+        return {
+            "strategy_name": self.strategy_name,
+            "current_price": current_price,
+            "ba_now": ba_now,
+            "signal": signal,
+            "signal_bolsa": signal_bolsa,
+            "candle_info": candle_info,
+            "next_session": next_session
+        }
+
+    def open_position(self, side, current_price, bolsa):
+        """
+        Ejecuta apertura de posición con dinero real o simulación:
+        - Modo Aislado
+        - Apalancamiento 10x
+        - Monto: 5 USDT de margen
+        """
+        notional_val = self.margin_usdt * self.leverage  # 5 * 10 = 50 USDT nocional
         qty = self._format_quantity(notional_val / current_price)
         self.actual_margin_used = (qty * current_price) / self.leverage
 
-        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ~{self.actual_margin_used:.2f} USDT x {self.leverage}x = {qty * current_price:.2f} USDT ({qty} {self.symbol}) a ~${current_price:.2f}")
+        logging.info(f"EJECUTANDO ENTRADA {side} ({bolsa}): Margen ${self.actual_margin_used:.2f} USDT x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f}")
 
         if self.dry_run:
             self.current_position = side
             self.entry_price = current_price
             self.position_qty = qty
             self.entry_time = datetime.now()
-            self.max_pnl_pct = 0.0
-            self.min_pnl_pct = 0.0
+            self.entry_bolsa = bolsa
+            self.max_gain_pct = 0.0
+            self.max_loss_pct = 0.0
             self.last_execution_error = None
             return True
 
         try:
-            # Cancelar cualquier orden residual antes de abrir
+            # Cancelar órdenes abiertas previas antes de entrar
             try:
                 self.client.futures_cancel_all_open_orders(symbol=self.symbol)
             except Exception:
@@ -806,8 +514,9 @@ class BinanceOracleNumerisBot:
                 type='MARKET',
                 quantity=qty
             )
-            logging.info(f"Orden de apertura completada: {order.get('orderId')}")
+            logging.info(f"Orden de apertura enviada a Binance: OrderID={order.get('orderId')}")
 
+            # Pequeña pausa para confirmar ejecución de llenado (fill)
             time.sleep(1)
             active_side, real_entry, real_qty = self.get_active_position()
             if real_entry > 0:
@@ -819,8 +528,9 @@ class BinanceOracleNumerisBot:
             self.position_qty = qty
             self.actual_margin_used = (qty * current_price) / self.leverage
             self.entry_time = datetime.now()
-            self.max_pnl_pct = 0.0
-            self.min_pnl_pct = 0.0
+            self.entry_bolsa = bolsa
+            self.max_gain_pct = 0.0
+            self.max_loss_pct = 0.0
             self.last_execution_error = None
             return True
 
@@ -832,52 +542,31 @@ class BinanceOracleNumerisBot:
     def check_exit_condition(self, current_price):
         """
         Reglas de salida:
-        5) LONG:
-           - TP: cuando el precio sube 100 USDT desde la entrada
-           - SL: cuando el precio baja 100 USDT desde la entrada
-        6) SHORT:
-           - TP: cuando el precio baja 100 USDT desde la entrada
-           - SL: cuando el precio sube 100 USDT desde la entrada
-        7) Tiempo máximo: cerrar operación luego de 30 min desde el punto de entrada
+        - TP: 10% de ganancia en ROE (Return On Equity / % ganancia sobre el margen con apalancamiento 10x).
+        - Sin SL.
         """
         if not self.current_position or self.entry_price <= 0:
             return False, None
 
-        # 7) Comprobar límite de tiempo de 50 minutos
-        if self.entry_time:
-            dur_mins = (datetime.now() - self.entry_time).total_seconds() / 60.0
-            if dur_mins >= self.max_duration_mins:
-                return True, f"Tiempo maximo alcanzado ({dur_mins:.1f}m >= {self.max_duration_mins:.0f}m)"
-
         if self.current_position == 'LONG':
-            # TP: precio sube 100 USDT
-            if current_price >= self.entry_price + self.take_profit_usdt:
-                diff = current_price - self.entry_price
-                return True, f"TP alcanzado (+{diff:.2f} USDT >= +{self.take_profit_usdt:.2f} USDT)"
-            # SL: precio baja 300 USDT
-            if current_price <= self.entry_price - self.stop_loss_usdt:
-                diff = self.entry_price - current_price
-                return True, f"SL alcanzado (-{diff:.2f} USDT >= -{self.stop_loss_usdt:.2f} USDT)"
+            # ROE Long % = ((Precio Actual - Entrada) / Entrada) * Apalancamiento * 100
+            pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
+        else:
+            # ROE Short % = ((Entrada - Precio Actual) / Entrada) * Apalancamiento * 100
+            pnl_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
 
-        elif self.current_position == 'SHORT':
-            # TP: precio baja 100 USDT
-            if current_price <= self.entry_price - self.take_profit_usdt:
-                diff = self.entry_price - current_price
-                return True, f"TP alcanzado (+{diff:.2f} USDT de ganancia >= +{self.take_profit_usdt:.2f} USDT)"
-            # SL: precio sube 300 USDT
-            if current_price >= self.entry_price + self.stop_loss_usdt:
-                diff = current_price - self.entry_price
-                return True, f"SL alcanzado (-{diff:.2f} USDT de perdida >= -{self.stop_loss_usdt:.2f} USDT)"
+        if pnl_pct >= self.take_profit_pct:
+            return True, f"TP alcanzado (+{pnl_pct:.2f}% >= +{self.take_profit_pct:.2f}%)"
 
         return False, None
 
-    def close_position(self, current_price, reason="Condicion de salida alcanzada"):
-        """Cierra la posición actual a mercado sin SL y registra en 2ganadas.txt o 2perdidas.txt."""
+    def close_position(self, current_price, reason="Take Profit alcanzado"):
+        """Cierra la posición actual a mercado y registra en 2ganadas.txt o 2perdidas.txt."""
         if not self.current_position:
             return
 
         side = self.current_position
-        logging.info(f"CERRANDO POSICION {side} por {reason} a ~${current_price:.2f}...")
+        logging.info(f"CERRANDO POSICION {side} ({self.entry_bolsa}) por {reason} @ ${current_price:.2f}...")
 
         exit_time = datetime.now()
         dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
@@ -893,11 +582,11 @@ class BinanceOracleNumerisBot:
                     quantity=qty,
                     reduceOnly=True
                 )
-                logging.info(f"Orden MARKET de cierre de {side} ejecutada.")
+                logging.info(f"Orden MARKET de cierre {side} ejecutada.")
             except Exception as e:
-                logging.error(f"Error enviando orden de cierre a Binance: {e}")
+                logging.error(f"Error ejecutando orden de cierre en Binance: {e}")
 
-        # Calcular PnL de la operación con apalancamiento 1x
+        # Cálculo de PnL y porcentajes
         if side == 'LONG':
             pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
             pnl_usdt = (current_price - self.entry_price) * self.position_qty
@@ -908,68 +597,78 @@ class BinanceOracleNumerisBot:
         if self.dry_run:
             self.simulated_balance += pnl_usdt
 
-        # Actualizar estadísticas y registrar en archivo correspondiente (2ganadas.txt o 2perdidas.txt)
-        self._record_and_save_trade(pnl_usdt, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
+        # Actualizar métricas y guardar en archivo correspondiente (2ganadas.txt o 2perdidas.txt)
+        self._record_and_save_trade(
+            pnl_usdt=pnl_usdt,
+            bolsa=self.entry_bolsa,
+            max_gain_pct=self.max_gain_pct,
+            max_loss_pct=self.max_loss_pct,
+            dur_mins=dur_mins,
+            exit_time=exit_time
+        )
 
         # Resetear estado de posición
         self.current_position = None
         self.entry_price = 0.0
         self.position_qty = 0.0
         self.entry_time = None
-        self.max_pnl_pct = 0.0
-        self.min_pnl_pct = 0.0
+        self.entry_bolsa = "DESCONOCIDA"
+        self.max_gain_pct = 0.0
+        self.max_loss_pct = 0.0
 
-    def _record_and_save_trade(self, pnl, max_gain_pct, max_loss_pct, dur_mins, exit_time):
+    def _record_and_save_trade(self, pnl_usdt, bolsa, max_gain_pct, max_loss_pct, dur_mins, exit_time):
         """
         DETALLES 2:
-        - 2ganadas.txt para operaciones con ganancia (pnl > 0).
-        - 2perdidas.txt para operaciones con pérdida (pnl <= 0).
+        - 2ganadas.txt donde van las operaciones que se ganaron
+        - 2perdidas.txt donde van las operaciones que se perdieron
         Columnas alineadas:
         dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
         """
-        if pnl > 0:
+        if pnl_usdt > 0:
             self.winning_trades += 1
-            self.money_won += pnl
+            self.money_won += pnl_usdt
             filename = "2ganadas.txt"
         else:
             self.losing_trades += 1
-            self.money_lost += abs(pnl)
+            self.money_lost += abs(pnl_usdt)
             filename = "2perdidas.txt"
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
-        bolsa_str = "BINANCE"
+        bolsa_str = bolsa.upper()
 
         gain_str = f"+{max_gain_pct:.2f}%"
         loss_str = f"{max_loss_pct:.2f}%"
-        dur_str = f"{dur_mins:.1f}m"
+        dur_str = f"{dur_mins:.1f} min"
 
-        line = f"{dia_str:<10} | {hora_str:<8} | {bolsa_str:<8} | {gain_str:<14} | {loss_str:<13} | {dur_str:<10}\n"
+        line = f"{dia_str:<10} | {hora_str:<8} | {bolsa_str:<10} | {gain_str:<15} | {loss_str:<15} | {dur_str:<10}\n"
 
         try:
             with open(filename, "a", encoding="utf-8") as f:
                 f.write(line)
-            logging.info(f"Registro guardado en {filename}: {line.strip()}")
+            logging.info(f"Operación registrada en {filename}: {line.strip()}")
         except Exception as e:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
-    def render_screen(self, strat_data, active_pos, entry, qty, pnl_pct, dur_mins, now_dt):
+    def render_screen(self, strat_data, active_pos, entry, pnl_pct, dur_mins):
         """
         DETALLES 3:
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla únicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
-        - Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualización de datos (\033[H).
-        - El formato del estado actual para estrategia:
-          en una linea: nombre de estrategia
-          en otra linea: precio
-          en otra linea: horario
-          en otra linea: posicion
+        - Reposicionar el cursor al inicio de la pantalla antes de actualizar en vez de borrar pantalla (\033[H).
+        - Operaciones con dinero real.
+
+        El formato del estado actual para estrategia:
+        en una linea: nombre de estrategia
+        en otra linea: precio
+        en otra linea: horario
+        en otra linea: posicion
         """
-        # Reposicionar el cursor al inicio de la pantalla (evita parpadeos de borrado completo)
+        # Reposicionar el cursor al inicio de la pantalla (evita parpadeos)
         sys.stdout.write("\033[H")
 
-        # Consultar balance
+        # Consultar balances para la cabecera
         if self.dry_run:
             wallet_bal = self.simulated_balance
             avail_bal = self.simulated_balance
@@ -989,77 +688,89 @@ class BinanceOracleNumerisBot:
 
         uptime_hours = (time.time() - self.bot_start_time) / 3600.0
 
-        # Formato de la posición actual
+        # Formatear línea de posición
         curr_price = strat_data['current_price']
         if active_pos and entry > 0:
-            dur_str = f" ({dur_mins:.1f}m)"
+            dur_str = f" ({dur_mins:.1f} min)"
             pnl_sign = "+" if pnl_pct >= 0 else ""
+            # TP objetivo en precio
             if active_pos == 'LONG':
-                cierre_info = f"TP: ${entry + self.take_profit_usdt:.2f} (+{self.take_profit_usdt:.0f}) | SL: ${entry - self.stop_loss_usdt:.2f} (-{self.stop_loss_usdt:.0f}) | Max: {self.max_duration_mins:.0f}m"
+                tp_price = entry * (1.0 + (self.take_profit_pct / (self.leverage * 100.0)))
             else:
-                cierre_info = f"TP: ${entry - self.take_profit_usdt:.2f} (-{self.take_profit_usdt:.0f}) | SL: ${entry + self.stop_loss_usdt:.2f} (+{self.stop_loss_usdt:.0f}) | Max: {self.max_duration_mins:.0f}m"
-            pos_line_str = f"{active_pos} @ ${entry:.2f} | PnL: {pnl_sign}{pnl_pct:.2f}%{dur_str} | {cierre_info}"
+                tp_price = entry * (1.0 - (self.take_profit_pct / (self.leverage * 100.0)))
+
+            pos_line = f"{active_pos} ({self.entry_bolsa}) @ ${entry:.2f} | ROE: {pnl_sign}{pnl_pct:.2f}%{dur_str} | TP: ${tp_price:.2f} (+{self.take_profit_pct:.0f}%) | SL: SIN SL"
         else:
-            pos_line_str = "SIN POSICION"
+            pos_line = "SIN POSICION"
 
-        curr_price_str = f"${curr_price:.2f}"
-        ba_now = strat_data.get('ba_now', now_dt)
-        sched_status = strat_data.get('schedule_status', '')
-        horario_str = f"{sched_status} | Hora actual BA: {ba_now.strftime('%Y-%m-%d %H:%M:%S')}"
+        # Formatear línea de horario
+        ba_now = strat_data['ba_now']
+        now_str = ba_now.strftime('%Y-%m-%d %H:%M:%S')
 
-        # Construcción del texto monocromo (sin códigos de colores ANSI)
+        next_sess = strat_data.get('next_session')
+        if next_sess:
+            rem_secs = int(next_sess['diff'].total_seconds())
+            h = rem_secs // 3600
+            m = (rem_secs % 3600) // 60
+            s = rem_secs % 60
+            countdown_str = f" | Proxima apertura: {next_sess['bolsa']} en {h:02d}h {m:02d}m {s:02d}s"
+        else:
+            countdown_str = ""
+
+        horario_line = f"{now_str} (Buenos Aires){countdown_str}"
+
+        # Construir líneas sin ningún código de color ANSI
         lines = []
         lines.append("======================================================================")
-        lines.append("       BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA ORACLE NUMERIS")
+        lines.append("     BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VELA APERTURA     ")
         lines.append("======================================================================")
-        monto_str = "100% de la cuenta de futuros" if self.use_all_balance else f"{self.margin_usdt:.2f} USDT"
-        lines.append(f"Simbolo: {self.symbol} | Modo: AISLADO | Apalancamiento: {self.leverage}x | Monto: {monto_str}")
-        lines.append(f"Modo de Ejecucion: {'DRY-RUN (Simulacion)' if self.dry_run else 'REAL (Dinero Real en Binance Futures)'}")
+        lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
+        lines.append(f"Modo de Ejecucion: {'SIMULACION (DRY-RUN)' if self.dry_run else 'DINERO REAL (Binance Futures)'}")
+        lines.append("Bolsas: Euronext (04:00 BA) | New York (10:30 BA) | Tokio (21:00 BA)")
+        lines.append("Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: 10% | Sin SL")
         lines.append("----------------------------------------------------------------------")
         if has_keys:
             lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
         else:
-            lines.append(f"Saldo Wallet (Simulado): {wallet_bal:.2f} USDT")
-        tv_status = f"Puerto {self.webhook_port} (Activo)" if self.webhook_enabled else "Desactivado"
-        lines.append(f"TradingView Webhook: {tv_status} | Ultima senal TV: {self.last_tv_signal}")
+            lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT (Simulado)")
         if self.last_execution_error:
-            lines.append(f"Aviso Ejecucion: {self.last_execution_error}")
+            lines.append(f"Aviso de ejecucion: {self.last_execution_error}")
         lines.append(f"Resumen: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 
-        # Formato del estado actual para estrategia (4 líneas exactas requeridas):
+        # Formato del estado actual para estrategia (4 líneas exactas):
         # en una linea: nombre de estrategia
         # en otra linea: precio
         # en otra linea: horario
         # en otra linea: posicion
         lines.append(f"nombre de estrategia: {strat_data['strategy_name']}")
-        lines.append(f"precio: {curr_price_str}")
-        lines.append(f"horario: {horario_str}")
-        lines.append(f"posicion: {pos_line_str}")
+        lines.append(f"precio: ${curr_price:.2f}")
+        lines.append(f"horario: {horario_line}")
+        lines.append(f"posicion: {pos_line}")
         lines.append("======================================================================")
 
-        # Borrar hasta el final de cada línea (\033[K) y de la pantalla (\033[J) para actualización limpia
-        rendered_output = "\n".join(line + "\033[K" for line in lines) + "\033[J\n"
-        sys.stdout.write(rendered_output)
+        # Borrar hasta fin de línea (\033[K) y fin de pantalla (\033[J) sin alterar cursor
+        rendered = "\n".join(l + "\033[K" for l in lines) + "\033[J\n"
+        sys.stdout.write(rendered)
         sys.stdout.flush()
 
     def run(self):
-        """Bucle principal de ejecución del bot (10:00 a 14:00 Buenos Aires en días NYSE) en velas de 1 minuto."""
-        logging.info("Bucle principal de monitoreo Oracle Numeris iniciado (10:00 a 14:00 BA en dias NYSE).")
+        """Bucle principal de ejecución del bot."""
+        logging.info("Bucle principal de monitoreo Vela apertura iniciado.")
+
+        # Limpiar la pantalla por única vez al arrancar
+        os.system('cls' if os.name == 'nt' else 'clear')
 
         while True:
             try:
-                now_dt = datetime.now()
-
-                # 1. Analizar estrategia Oracle Numeris en temporalidad de 1 minuto (1m)
-                strat_data = self.analyze_strategy()
-                curr_price = strat_data['current_price']
+                ba_now = datetime.now(TZ_BA)
+                curr_price = self.get_latest_price()
 
                 if curr_price == 0.0:
                     time.sleep(self.poll_interval)
                     continue
 
-                # 2. Consultar posición activa
+                # 1. Consultar si hay una posición activa actualmente
                 active_pos, entry, qty = self.get_active_position()
 
                 # Si no está en dry_run pero externamente se cerró la posición en Binance
@@ -1067,13 +778,14 @@ class BinanceOracleNumerisBot:
                     exit_time = datetime.now()
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
                     pnl = (curr_price - self.entry_price) * self.position_qty if self.current_position == 'LONG' else (self.entry_price - curr_price) * self.position_qty
-                    self._record_and_save_trade(pnl, self.max_pnl_pct, self.min_pnl_pct, dur_mins, exit_time)
+                    self._record_and_save_trade(pnl, self.entry_bolsa, self.max_gain_pct, self.max_loss_pct, dur_mins, exit_time)
                     self.current_position = None
                     self.entry_price = 0.0
                     self.position_qty = 0.0
                     self.entry_time = None
-                    self.max_pnl_pct = 0.0
-                    self.min_pnl_pct = 0.0
+                    self.entry_bolsa = "DESCONOCIDA"
+                    self.max_gain_pct = 0.0
+                    self.max_loss_pct = 0.0
 
                 pnl_pct = 0.0
                 dur_mins = 0.0
@@ -1084,37 +796,38 @@ class BinanceOracleNumerisBot:
                     else:
                         pnl_pct = ((entry - curr_price) / entry) * self.leverage * 100.0
 
-                    if pnl_pct > self.max_pnl_pct:
-                        self.max_pnl_pct = pnl_pct
-                    if pnl_pct < self.min_pnl_pct:
-                        self.min_pnl_pct = pnl_pct
+                    if pnl_pct > self.max_gain_pct:
+                        self.max_gain_pct = pnl_pct
+                    if pnl_pct < self.max_loss_pct:
+                        self.max_loss_pct = pnl_pct
+
+                # 2. Analizar vela de apertura según horarios bursátiles
+                strat_data = self.analyze_strategy(curr_price, ba_now)
 
                 # 3. Renderizar pantalla monocroma con cabecera y estado actual
                 self.render_screen(
                     strat_data=strat_data,
                     active_pos=active_pos,
                     entry=entry,
-                    qty=qty,
                     pnl_pct=pnl_pct,
-                    dur_mins=dur_mins,
-                    now_dt=now_dt
+                    dur_mins=dur_mins
                 )
 
                 # 4. Lógica de salidas:
-                # - Long: TP +100 USDT, SL -100 USDT, Max 30 min
-                # - Short: TP -100 USDT, SL +100 USDT, Max 30 min
+                # - TP: 10% de ganancia
+                # - Sin SL
                 should_close, close_reason = self.check_exit_condition(curr_price)
                 if active_pos and should_close:
                     self.close_position(curr_price, reason=close_reason)
                     active_pos = None
 
                 # 5. Lógica de entradas:
-                # - Operar de 10 a 14 hs (Buenos Aires) únicamente los días que está abierta la NYSE
-                # - Inmediatamente al detectar señal del indicador Oracle Numeris
-                # - Una sola entrada a la vez
-                if active_pos is None and strat_data.get('is_trading_window', False) and strat_data['entry_signal']:
-                    signal = strat_data['entry_signal']
-                    self.open_position(side=signal, current_price=curr_price)
+                # - Hacer una sola entrada a la vez, no hacer varias entradas en simultáneo
+                # - Si se detectó señal de vela de apertura (Euronext 04:00, NY 10:30, Tokio 21:00)
+                if active_pos is None and strat_data["signal"]:
+                    sig = strat_data["signal"]
+                    bolsa = strat_data["signal_bolsa"]
+                    self.open_position(side=sig, current_price=curr_price, bolsa=bolsa)
 
                 time.sleep(self.poll_interval)
 
@@ -1122,10 +835,10 @@ class BinanceOracleNumerisBot:
                 print("\n[!] Bot detenido por el usuario.")
                 break
             except Exception as e:
-                logging.error(f"Excepción en el bucle principal: {e}")
+                logging.error(f"Excepción en bucle principal: {e}")
                 time.sleep(self.poll_interval)
 
 
 if __name__ == "__main__":
-    bot = BinanceOracleNumerisBot()
+    bot = BinanceOpeningCandleBot()
     bot.run()

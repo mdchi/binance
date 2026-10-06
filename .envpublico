@@ -1,41 +1,25 @@
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
-# Monto: '100%' o 'ALL' para usar el total del saldo disponible de la cuenta en futuros
-MARGIN_USDT=100%
-LEVERAGE=1
+# Monto en USDT por operación
+MARGIN_USDT=5.0
+LEVERAGE=10
 MARGIN_TYPE=ISOLATED
 
-# Estrategia: Oracle Numeris
-STRATEGY_NAME=Oracle numeris
+# Estrategia: Vela apertura
+STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# Parámetros de Salida (TP, SL y Duración máxima)
-# Long: TP = entrada + 100 USDT, SL = entrada - 100 USDT
-# Short: TP = entrada - 100 USDT, SL = entrada + 100 USDT
-TAKE_PROFIT_USDT=100.0
-STOP_LOSS_USDT=100.0
-MAX_DURATION_MINUTES=30.0
+# Take Profit: 10% de ganancia en ROE (sin Stop Loss)
+TAKE_PROFIT_PCT=10.0
 
-# Horario Operativo (Horario Buenos Aires: 10 a 14 hs únicamente en días hábiles de NYSE)
-TRADING_START_HOUR=10
-TRADING_END_HOUR=14
+# Horarios de Apertura de Bolsas (Horario Buenos Aires UTC-3)
+# Formato: HORA:MINUTO:BOLSAS
+# Euronext: 04:00 | New York: 10:30 | Tokio: 21:00
+SESSIONS_CONFIG=EURONEXT:04:00,NEW YORK:10:30,TOKIO:21:00
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
 USE_TESTNET=False
 
-# Intervalo de actualización en segundos para monitoreo continuo en velas de 1m
-POLL_INTERVAL_SEC=2
-
-# Parámetros del indicador Oracle Numeris (Emulación algorítmica cuantitativa)
-ORACLE_EMA_FAST=9
-ORACLE_EMA_SLOW=21
-ORACLE_VOL_FACTOR=1.2
-ORACLE_MOMENTUM_LEN=14
-
-# Integración Directa TradingView Webhook
-WEBHOOK_ENABLED=True
-WEBHOOK_HOST=0.0.0.0
-WEBHOOK_PORT=80
-WEBHOOK_PASSPHRASE=oracle_numeris_secret
-
+# Intervalo de actualización en segundos para monitoreo continuo
+POLL_INTERVAL_SEC=1
