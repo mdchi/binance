@@ -9,8 +9,14 @@ MARGIN_TYPE=ISOLATED
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# Take Profit: 10% de ganancia en ROE (sin Stop Loss)
-TAKE_PROFIT_PCT=10.0
+# Take Profit: 2.5% de ganancia neta descontando comisiones
+TAKE_PROFIT_PCT=2.5
+
+# Stop Loss: 10.0% de perdida neta incluyendo comisiones
+STOP_LOSS_PCT=10.0
+
+# Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
+FEE_RATE_PCT=0.05
 
 # Horarios de Apertura de Bolsas (Horario Buenos Aires UTC-3)
 # Formato: HORA:MINUTO:BOLSAS
