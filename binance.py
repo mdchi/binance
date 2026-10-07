@@ -11,17 +11,15 @@ Estrategia: Vela apertura
 1) analizar la vela apertura en temporalidad 1 min
 2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 
-3) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana)
-4) analizar vela apertura de bolsa tokio 21 hs (horario buenos aires por la noche)
-5) analizar vela apertura de bolsa euronext 4 hs (horario buenos aires por la madrugada)
+2) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana)
 
-6) entrada en long: si la vela apertura analizada es una vela roja
-   TP: 2.5% de ganancia descontando comisiones
-   SL: 10% de perdida incluyendo comisiones
+3) entrada en long: si la vela apertura analizada es una vela roja
+   TP: 2% de ganancia descontando comisiones
+   SL: 6% de perdida incluyendo comisiones
 
-7) entrada en short: si la vela apertura analizada es una vela verde
-   TP: 2.5% de ganancia descontando comisiones
-   SL: 10% de perdida incluyendo comisiones
+4) entrada en short: si la vela apertura analizada es una vela verde
+   TP: 2% de ganancia descontando comisiones
+   SL: 6% de perdida incluyendo comisiones
 
 El formato del estado actual para estrategia:
 en una linea: nombre de estrategia
@@ -33,7 +31,7 @@ Detalles:
 1) Cerrar posiciones abiertas al iniciar bot
 
 2) hacer archivo 2ganadas.txt donde van las operaciones que se ganaron y archivo 2perdidas.txt donde van las opereciones que se perdieron, con columnas alineadas, con los datos:
-dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
+dia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion
 
 3) Mantener cabecera siempre visible en pantalla.
 Mantener visible en pantalla unicamente el estado actual.
@@ -117,8 +115,8 @@ class BinanceOpeningCandleBot:
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "2.5"))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "10.0"))
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "2.0"))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "6.0"))
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "1.0"))
 
@@ -126,14 +124,9 @@ class BinanceOpeningCandleBot:
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Configuración de sesiones bursátiles (Horario Buenos Aires)
-        # Formato: name: 'EURONEXT', hour: 4, minute: 0
-        #          name: 'NEW YORK', hour: 10, minute: 30
-        #          name: 'TOKIO',    hour: 21, minute: 0
+        # Configuración de apertura: Bolsa de New York 10:30 hs (Horario Buenos Aires)
         self.sessions = [
-            {"bolsa": "EURONEXT", "hour": 4, "minute": 0},
-            {"bolsa": "NEW YORK", "hour": 10, "minute": 30},
-            {"bolsa": "TOKIO", "hour": 21, "minute": 0}
+            {"bolsa": "NEW YORK", "hour": 10, "minute": 30}
         ]
 
         # Cliente Binance y reglas de precisión de mercado
@@ -154,7 +147,6 @@ class BinanceOpeningCandleBot:
         self.entry_price = 0.0
         self.position_qty = 0.0
         self.entry_time = None
-        self.entry_bolsa = "DESCONOCIDA"
         self.simulated_balance = 50.0
 
         # Métricas de la operación en curso
@@ -173,9 +165,9 @@ class BinanceOpeningCandleBot:
         self._initialize_client()
 
     def _init_trade_log_files(self):
-        """DETALLES 2: Inicializar 2ganadas.txt y 2perdidas.txt con encabezados y columnas alineadas."""
-        header = f"{'Dia':<10} | {'Hora':<8} | {'Bolsa':<10} | {'% Ganancia Max':<15} | {'% Perdida Max':<15} | {'Duracion':<10}\n"
-        separator = "-" * 82 + "\n"
+        """DETALLES 2: Inicializar 2ganadas.txt y 2perdidas.txt con columnas: dia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion."""
+        header = f"{'Dia':<10} | {'Hora':<8} | {'% Ganancia Max':<15} | {'% Perdida Max':<15} | {'Duracion':<10}\n"
+        separator = "-" * 70 + "\n"
         for filename in ["2ganadas.txt", "2perdidas.txt"]:
             if not os.path.exists(filename) or os.path.getsize(filename) == 0:
                 try:
@@ -187,7 +179,7 @@ class BinanceOpeningCandleBot:
 
     def _initialize_client(self):
         """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones previas."""
-        logging.info("Iniciando Bot Binance Vela apertura...")
+        logging.info("Iniciando Bot Binance Vela apertura (New York 10:30 hs)...")
         logging.info(f"Símbolo: {self.symbol} | Margen: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
 
         try:
@@ -356,7 +348,7 @@ class BinanceOpeningCandleBot:
     def fetch_opening_candle(self, target_dt_ba):
         """
         Obtiene la vela de 1 minuto correspondiente al horario de apertura especificado (horario Buenos Aires).
-        target_dt_ba: datetime con TZ_BA del minuto exacto de apertura (ej: 10:30:00).
+        target_dt_ba: datetime con TZ_BA del minuto exacto de apertura (10:30:00).
         Retorna: dict con {open, high, low, close, is_closed} o None.
         """
         try:
@@ -384,7 +376,6 @@ class BinanceOpeningCandleBot:
             candle_close_time = int(k[6])
 
             # Verificar si la vela ya cerró (tiempo actual >= close_time)
-            # Binance close_time es timestamp_ms del final del minuto (ej: :59.999)
             now_ms = int(time.time() * 1000)
             is_closed = now_ms >= candle_close_time
 
@@ -404,11 +395,10 @@ class BinanceOpeningCandleBot:
     def analyze_strategy(self, current_price, ba_now):
         """
         Evalúa las condiciones de la estrategia: Vela apertura
-        3) Euronext 04:00 hs (BA)
-        4) New York 10:30 hs (BA)
-        5) Tokio 21:00 hs (BA)
-        6) Long si la vela apertura es roja (close < open)
-        7) Short si la vela apertura es verde (close > open)
+        - Bolsa de New York 10:30 hs (horario Buenos Aires por la mañana)
+        - Temporalidad: 1 min
+        - Entrada en LONG: si la vela de apertura analizada es una vela roja (close < open)
+        - Entrada en SHORT: si la vela de apertura analizada es una vela verde (close > open)
         """
         today_date = ba_now.date()
 
@@ -427,10 +417,9 @@ class BinanceOpeningCandleBot:
             # Diferencia en segundos respecto a la hora de apertura
             diff_seconds = (ba_now - target_dt).total_seconds()
 
-            # Cálculo de la próxima sesión bursátil para mostrar en pantalla
+            # Cálculo de la próxima apertura para monitoreo
             time_until = target_dt - ba_now
             if time_until.total_seconds() < 0:
-                # Si ya pasó hoy, la próxima es mañana
                 target_tomorrow = target_dt + timedelta(days=1)
                 time_until = target_tomorrow - ba_now
 
@@ -443,9 +432,8 @@ class BinanceOpeningCandleBot:
                 }
 
             # Ventana de evaluación de la vela de apertura:
-            # La vela abre en target_dt y cierra en target_dt + 60 segundos.
-            # Verificamos entre 60 segundos y 300 segundos (5 minutos) posteriores a la apertura
-            # para asegurar que la vela cerró por completo y hacer la entrada si no se procesó.
+            # La vela abre a las 10:30:00 y cierra a las 10:31:00 (60 segundos).
+            # Analizamos entre los 60 y 300 segundos posteriores a la apertura.
             if 60 <= diff_seconds <= 300:
                 if session_key not in self.processed_sessions:
                     candle = self.fetch_opening_candle(target_dt)
@@ -460,12 +448,11 @@ class BinanceOpeningCandleBot:
                             signal = "SHORT"
                             signal_bolsa = s["bolsa"]
                         else:
-                            # Vela doji (neutra)
+                            # Vela doji neutral
                             logging.info(f"Vela de apertura {s['bolsa']} doji neutral ({candle['open']} == {candle['close']}).")
                             self.processed_sessions.add(session_key)
 
                         if signal:
-                            # Marcar sesión como procesada
                             self.processed_sessions.add(session_key)
 
         return {
@@ -480,7 +467,7 @@ class BinanceOpeningCandleBot:
 
     def open_position(self, side, current_price, bolsa):
         """
-        Ejecuta apertura de posición con dinero real o simulación:
+        Ejecuta apertura de posición:
         - Modo Aislado
         - Apalancamiento 10x
         - Monto: 5 USDT de margen
@@ -496,7 +483,6 @@ class BinanceOpeningCandleBot:
             self.entry_price = current_price
             self.position_qty = qty
             self.entry_time = datetime.now()
-            self.entry_bolsa = bolsa
             self.max_gain_pct = 0.0
             self.max_loss_pct = 0.0
             self.last_execution_error = None
@@ -518,7 +504,7 @@ class BinanceOpeningCandleBot:
             )
             logging.info(f"Orden de apertura enviada a Binance: OrderID={order.get('orderId')}")
 
-            # Pequeña pausa para confirmar ejecución de llenado (fill)
+            # Pausa para confirmar llenado
             time.sleep(1)
             active_side, real_entry, real_qty = self.get_active_position()
             if real_entry > 0:
@@ -530,7 +516,6 @@ class BinanceOpeningCandleBot:
             self.position_qty = qty
             self.actual_margin_used = (qty * current_price) / self.leverage
             self.entry_time = datetime.now()
-            self.entry_bolsa = bolsa
             self.max_gain_pct = 0.0
             self.max_loss_pct = 0.0
             self.last_execution_error = None
@@ -544,8 +529,8 @@ class BinanceOpeningCandleBot:
     def check_exit_condition(self, current_price):
         """
         Reglas de salida:
-        - TP: 2.5% de ganancia descontando comisiones
-        - SL: 10% de perdida incluyendo comisiones
+        - TP: 2% de ganancia descontando comisiones
+        - SL: 6% de perdida incluyendo comisiones
         """
         if not self.current_position or self.entry_price <= 0:
             return False, None
@@ -563,11 +548,11 @@ class BinanceOpeningCandleBot:
         # PnL neto en % sobre el margen
         net_pnl_pct = gross_pnl_pct - fee_impact_pct
 
-        # 6) y 7) TP: 2.5% de ganancia descontando comisiones
+        # TP: 2% de ganancia descontando comisiones
         if net_pnl_pct >= self.take_profit_pct:
             return True, f"TP alcanzado (Neto: +{net_pnl_pct:.2f}% >= +{self.take_profit_pct:.2f}%)"
 
-        # 6) y 7) SL: 10% de perdida incluyendo comisiones
+        # SL: 6% de perdida incluyendo comisiones
         if net_pnl_pct <= -abs(self.stop_loss_pct):
             return True, f"SL alcanzado (Neto: {net_pnl_pct:.2f}% <= -{abs(self.stop_loss_pct):.2f}%)"
 
@@ -579,7 +564,7 @@ class BinanceOpeningCandleBot:
             return
 
         side = self.current_position
-        logging.info(f"CERRANDO POSICION {side} ({self.entry_bolsa}) por {reason} @ ${current_price:.2f}...")
+        logging.info(f"CERRANDO POSICION {side} por {reason} @ ${current_price:.2f}...")
 
         exit_time = datetime.now()
         dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
@@ -619,7 +604,6 @@ class BinanceOpeningCandleBot:
         # Actualizar métricas y guardar en archivo correspondiente (2ganadas.txt o 2perdidas.txt)
         self._record_and_save_trade(
             pnl_usdt=net_pnl_usdt,
-            bolsa=self.entry_bolsa,
             max_gain_pct=self.max_gain_pct,
             max_loss_pct=self.max_loss_pct,
             dur_mins=dur_mins,
@@ -631,17 +615,16 @@ class BinanceOpeningCandleBot:
         self.entry_price = 0.0
         self.position_qty = 0.0
         self.entry_time = None
-        self.entry_bolsa = "DESCONOCIDA"
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
 
-    def _record_and_save_trade(self, pnl_usdt, bolsa, max_gain_pct, max_loss_pct, dur_mins, exit_time):
+    def _record_and_save_trade(self, pnl_usdt, max_gain_pct, max_loss_pct, dur_mins, exit_time):
         """
         DETALLES 2:
         - 2ganadas.txt donde van las operaciones que se ganaron
         - 2perdidas.txt donde van las operaciones que se perdieron
         Columnas alineadas:
-        dia, hora, bolsa, % ganancia maximo, % perdida maximo, duracion de la operacion
+        dia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion
         """
         if pnl_usdt > 0:
             self.winning_trades += 1
@@ -654,13 +637,12 @@ class BinanceOpeningCandleBot:
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
-        bolsa_str = bolsa.upper()
 
         gain_str = f"+{max_gain_pct:.2f}%"
         loss_str = f"{max_loss_pct:.2f}%"
         dur_str = f"{dur_mins:.1f} min"
 
-        line = f"{dia_str:<10} | {hora_str:<8} | {bolsa_str:<10} | {gain_str:<15} | {loss_str:<15} | {dur_str:<10}\n"
+        line = f"{dia_str:<10} | {hora_str:<8} | {gain_str:<15} | {loss_str:<15} | {dur_str:<10}\n"
 
         try:
             with open(filename, "a", encoding="utf-8") as f:
@@ -673,10 +655,10 @@ class BinanceOpeningCandleBot:
         """
         DETALLES 3:
         - Mantener cabecera siempre visible en pantalla.
-        - Mantener visible en pantalla únicamente el estado actual.
-        - No utilizar colores en todo el texto visualizado en pantalla (Monocromo).
-        - Reposicionar el cursor al inicio de la pantalla antes de actualizar en vez de borrar pantalla (\033[H).
-        - Operaciones con dinero real.
+        - Mantener visible en pantalla unicamente el estado actual.
+        - No utilizar colores en todo el texto visualizado en pantalla.
+        - Reposicionar el cursor al inicio de la pantalla antes de actualizar en vez de borrar la pantalla por completo (\033[H).
+        - Hacer operaciones con dinero real.
 
         El formato del estado actual para estrategia:
         en una linea: nombre de estrategia
@@ -684,7 +666,7 @@ class BinanceOpeningCandleBot:
         en otra linea: horario
         en otra linea: posicion
         """
-        # Reposicionar el cursor al inicio de la pantalla (evita parpadeos)
+        # Reposicionar el cursor al inicio de la pantalla (evita parpadeos y mantiene la visualización limpia)
         sys.stdout.write("\033[H")
 
         # Consultar balances para la cabecera
@@ -721,7 +703,7 @@ class BinanceOpeningCandleBot:
                 tp_price = entry * (1.0 - ((self.take_profit_pct + fee_impact_pct) / (self.leverage * 100.0)))
                 sl_price = entry * (1.0 + ((self.stop_loss_pct - fee_impact_pct) / (self.leverage * 100.0)))
 
-            pos_line = f"{active_pos} ({self.entry_bolsa}) @ ${entry:.2f} | ROE: {pnl_sign}{pnl_pct:.2f}%{dur_str} | TP: ${tp_price:.2f} (+{self.take_profit_pct:.1f}%) | SL: ${sl_price:.2f} (-{self.stop_loss_pct:.1f}%)"
+            pos_line = f"{active_pos} @ ${entry:.2f} | ROE: {pnl_sign}{pnl_pct:.2f}%{dur_str} | TP: ${tp_price:.2f} (+{self.take_profit_pct:.1f}%) | SL: ${sl_price:.2f} (-{self.stop_loss_pct:.1f}%)"
         else:
             pos_line = "SIN POSICION"
 
@@ -735,20 +717,20 @@ class BinanceOpeningCandleBot:
             h = rem_secs // 3600
             m = (rem_secs % 3600) // 60
             s = rem_secs % 60
-            countdown_str = f" | Proxima apertura: {next_sess['bolsa']} en {h:02d}h {m:02d}m {s:02d}s"
+            countdown_str = f" | Proxima apertura: {next_sess['bolsa']} 10:30 hs en {h:02d}h {m:02d}m {s:02d}s"
         else:
             countdown_str = ""
 
         horario_line = f"{now_str} (Buenos Aires){countdown_str}"
 
-        # Construir líneas sin ningún código de color ANSI
+        # Construir líneas sin ningún código de color ANSI (texto plano monocromo)
         lines = []
         lines.append("======================================================================")
         lines.append("     BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VELA APERTURA     ")
         lines.append("======================================================================")
         lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
         lines.append(f"Modo de Ejecucion: {'SIMULACION (DRY-RUN)' if self.dry_run else 'DINERO REAL (Binance Futures)'}")
-        lines.append("Bolsas: Euronext (04:00 BA) | New York (10:30 BA) | Tokio (21:00 BA)")
+        lines.append("Apertura: New York 10:30 hs (Horario Buenos Aires)")
         lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: {self.take_profit_pct:.1f}% neto | SL: {self.stop_loss_pct:.1f}%")
         lines.append("----------------------------------------------------------------------")
         if has_keys:
@@ -760,7 +742,7 @@ class BinanceOpeningCandleBot:
         lines.append(f"Resumen: Tiempo: {uptime_hours:.2f}h | Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("======================================================================")
 
-        # Formato del estado actual para estrategia (4 líneas exactas):
+        # Formato del estado actual para estrategia (4 líneas requeridas):
         # en una linea: nombre de estrategia
         # en otra linea: precio
         # en otra linea: horario
@@ -800,12 +782,11 @@ class BinanceOpeningCandleBot:
                     exit_time = datetime.now()
                     dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
                     pnl = (curr_price - self.entry_price) * self.position_qty if self.current_position == 'LONG' else (self.entry_price - curr_price) * self.position_qty
-                    self._record_and_save_trade(pnl, self.entry_bolsa, self.max_gain_pct, self.max_loss_pct, dur_mins, exit_time)
+                    self._record_and_save_trade(pnl, self.max_gain_pct, self.max_loss_pct, dur_mins, exit_time)
                     self.current_position = None
                     self.entry_price = 0.0
                     self.position_qty = 0.0
                     self.entry_time = None
-                    self.entry_bolsa = "DESCONOCIDA"
                     self.max_gain_pct = 0.0
                     self.max_loss_pct = 0.0
 
@@ -823,7 +804,7 @@ class BinanceOpeningCandleBot:
                     if pnl_pct < self.max_loss_pct:
                         self.max_loss_pct = pnl_pct
 
-                # 2. Analizar vela de apertura según horarios bursátiles
+                # 2. Analizar vela de apertura de New York 10:30 hs (BA)
                 strat_data = self.analyze_strategy(curr_price, ba_now)
 
                 # 3. Renderizar pantalla monocroma con cabecera y estado actual
@@ -836,8 +817,8 @@ class BinanceOpeningCandleBot:
                 )
 
                 # 4. Lógica de salidas:
-                # - TP: 2.5% de ganancia descontando comisiones
-                # - SL: 10% de perdida incluyendo comisiones
+                # - TP: 2% de ganancia descontando comisiones
+                # - SL: 6% de perdida incluyendo comisiones
                 should_close, close_reason = self.check_exit_condition(curr_price)
                 if active_pos and should_close:
                     self.close_position(curr_price, reason=close_reason)
@@ -845,7 +826,7 @@ class BinanceOpeningCandleBot:
 
                 # 5. Lógica de entradas:
                 # - Hacer una sola entrada a la vez, no hacer varias entradas en simultáneo
-                # - Si se detectó señal de vela de apertura (Euronext 04:00, NY 10:30, Tokio 21:00)
+                # - Si se detectó señal en la vela de apertura de New York 10:30 hs
                 if active_pos is None and strat_data["signal"]:
                     sig = strat_data["signal"]
                     bolsa = strat_data["signal_bolsa"]

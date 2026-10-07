@@ -9,19 +9,18 @@ MARGIN_TYPE=ISOLATED
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# Take Profit: 2.5% de ganancia neta descontando comisiones
-TAKE_PROFIT_PCT=2.5
+# Take Profit: 2.0% de ganancia descontando comisiones
+TAKE_PROFIT_PCT=2.0
 
-# Stop Loss: 10.0% de perdida neta incluyendo comisiones
-STOP_LOSS_PCT=10.0
+# Stop Loss: 6.0% de perdida incluyendo comisiones
+STOP_LOSS_PCT=6.0
 
 # Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
 FEE_RATE_PCT=0.05
 
-# Horarios de Apertura de Bolsas (Horario Buenos Aires UTC-3)
-# Formato: HORA:MINUTO:BOLSAS
-# Euronext: 04:00 | New York: 10:30 | Tokio: 21:00
-SESSIONS_CONFIG=EURONEXT:04:00,NEW YORK:10:30,TOKIO:21:00
+# Horarios de Apertura de Bolsa (Horario Buenos Aires UTC-3)
+# New York: 10:30 hs
+SESSIONS_CONFIG=NEW YORK:10:30
 
 # Modos de Ejecución (Operación con Dinero Real)
 DRY_RUN=False
