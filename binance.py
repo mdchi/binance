@@ -5,7 +5,7 @@ Bot de trading automatico en Binance.com
 
 Modo Aislado
 Apalancamiento 10x 
-Monto: 5 usdt
+Monto: 100% de usdt de la cuenta futuros
 
 Estrategia: Vela apertura
 1) analizar la vela apertura en temporalidad 1 min
@@ -110,7 +110,8 @@ class BinanceOpeningCandleBot:
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "5.0"))
+        self.margin_pct = float(os.getenv("MARGIN_PCT", "100.0"))
+        self.margin_usdt = float(os.getenv("MARGIN_USDT", "0.0"))  # 0.0 indica usar self.margin_pct (100%)
         self.leverage = int(os.getenv("LEVERAGE", "10"))
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
@@ -179,8 +180,9 @@ class BinanceOpeningCandleBot:
 
     def _initialize_client(self):
         """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones previas."""
+        monto_desc = f"{self.margin_usdt:.2f} USDT" if self.margin_usdt > 0 else f"{self.margin_pct:.0f}% de la cuenta USDT"
         logging.info("Iniciando Bot Binance Vela apertura (New York 10:30 hs)...")
-        logging.info(f"Símbolo: {self.symbol} | Margen: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt} USDT")
+        logging.info(f"Símbolo: {self.symbol} | Margen: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {monto_desc}")
 
         try:
             if self.api_key and self.api_secret:
@@ -336,6 +338,34 @@ class BinanceOpeningCandleBot:
             logging.error(f"Error consultando posiciones activas: {e}")
             return self.current_position, self.entry_price, self.position_qty
 
+    def get_available_balance(self):
+        """Consulta el saldo USDT disponible en la cuenta de Binance Futures."""
+        if self.dry_run or not self.client or not self.api_key or not self.api_secret:
+            return self.simulated_balance
+
+        try:
+            acc = self.client.futures_account()
+            # Buscar balance específico de USDT en assets o availableBalance
+            avail = float(acc.get('availableBalance', 0.0))
+            for asset in acc.get('assets', []):
+                if asset.get('asset') == 'USDT':
+                    avail = float(asset.get('availableBalance', avail))
+                    break
+            return avail
+        except Exception as e:
+            logging.error(f"Error consultando balance disponible de USDT: {e}")
+            return 0.0
+
+    def get_target_margin_usdt(self):
+        """Calcula el margen a utilizar en USDT según configuración (100% de la cuenta o fijo)."""
+        if self.margin_usdt > 0.0:
+            return self.margin_usdt
+        avail = self.get_available_balance()
+        target = (avail * (self.margin_pct / 100.0))
+        # Asegurar un margen de seguridad mínimo (descontando pequeña fracción para comisiones de margen si aplica)
+        margin = max(0.0, target * 0.995)
+        return margin
+
     def get_latest_price(self):
         """Obtiene el precio más reciente de Binance Futures."""
         try:
@@ -470,13 +500,20 @@ class BinanceOpeningCandleBot:
         Ejecuta apertura de posición:
         - Modo Aislado
         - Apalancamiento 10x
-        - Monto: 5 USDT de margen
+        - Monto: 100% de USDT de la cuenta futuros (o margen configurado)
         """
-        notional_val = self.margin_usdt * self.leverage  # 5 * 10 = 50 USDT nocional
+        margin_to_use = self.get_target_margin_usdt()
+        notional_val = margin_to_use * self.leverage
         qty = self._format_quantity(notional_val / current_price)
         self.actual_margin_used = (qty * current_price) / self.leverage
 
-        logging.info(f"EJECUTANDO ENTRADA {side} ({bolsa}): Margen ${self.actual_margin_used:.2f} USDT x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f}")
+        if qty < self.min_qty or self.actual_margin_used <= 0:
+            err_msg = f"Margen insuficiente para operar {self.symbol} (Disponible: ${margin_to_use:.2f} USDT, Mínimo requerido: {self.min_qty} {self.symbol})"
+            logging.error(err_msg)
+            self.last_execution_error = err_msg
+            return False
+
+        logging.info(f"EJECUTANDO ENTRADA {side} ({bolsa}): Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f}")
 
         if self.dry_run:
             self.current_position = side
@@ -728,7 +765,8 @@ class BinanceOpeningCandleBot:
         lines.append("======================================================================")
         lines.append("     BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VELA APERTURA     ")
         lines.append("======================================================================")
-        lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_usdt:.2f} USDT")
+        monto_str = f"{self.margin_usdt:.2f} USDT" if self.margin_usdt > 0 else f"{self.margin_pct:.0f}% USDT ({avail_bal:.2f} USDT disp.)"
+        lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {monto_str}")
         lines.append(f"Modo de Ejecucion: {'SIMULACION (DRY-RUN)' if self.dry_run else 'DINERO REAL (Binance Futures)'}")
         lines.append("Apertura: New York 10:30 hs (Horario Buenos Aires)")
         lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: {self.take_profit_pct:.1f}% neto | SL: {self.stop_loss_pct:.1f}%")
