@@ -55,8 +55,9 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
-# Zona horaria de Buenos Aires (UTC-3)
+# Zona horaria de Buenos Aires (UTC-3) y New York (ET)
 TZ_BA = ZoneInfo("America/Argentina/Buenos_Aires")
+TZ_NY = ZoneInfo("America/New_York")
 
 # 1. Configuración de consola Windows para soporte ANSI/VT
 if os.name == 'nt':
@@ -422,10 +423,97 @@ class BinanceOpeningCandleBot:
             logging.error(f"Error al obtener vela de apertura para {target_dt_ba}: {e}")
             return None
 
+    @staticmethod
+    def _easter_date(year):
+        """Calcula el Domingo de Pascua para determinar Viernes Santo (Good Friday)."""
+        a = year % 19
+        b = year // 100
+        c = year % 100
+        d = b // 4
+        e = b % 4
+        f = (b + 8) // 25
+        g = (b - f + 1) // 3
+        h = (19 * a + b - d - g + 15) % 30
+        i = c // 4
+        k = c % 4
+        l = (32 + 2 * e + 2 * i - h - k) % 7
+        m = (a + 11 * h + 22 * l) // 451
+        month = (h + l - 7 * m + 114) // 31
+        day = ((h + l - 7 * m + 114) % 31) + 1
+        return date(year, month, day)
+
+    @classmethod
+    def get_nyse_holidays(cls, year):
+        """Feriados en los que la Bolsa de New York (NYSE) está cerrada."""
+        holidays = set()
+
+        def add_observed(d):
+            if d.weekday() == 5:    # Sábado -> se observa Viernes anterior
+                holidays.add(d - timedelta(days=1))
+            elif d.weekday() == 6:  # Domingo -> se observa Lunes posterior
+                holidays.add(d + timedelta(days=1))
+            else:
+                holidays.add(d)
+
+        def nth_weekday(yr, mn, target_weekday, n):
+            count = 0
+            cur = date(yr, mn, 1)
+            while cur.month == mn:
+                if cur.weekday() == target_weekday:
+                    count += 1
+                    if count == n:
+                        return cur
+                cur += timedelta(days=1)
+            return None
+
+        def last_weekday(yr, mn, target_weekday):
+            cur = date(yr, mn + 1, 1) - timedelta(days=1) if mn < 12 else date(yr, 12, 31)
+            while cur.month == mn:
+                if cur.weekday() == target_weekday:
+                    return cur
+                cur -= timedelta(days=1)
+            return None
+
+        # 1. New Year's Day (1 de enero)
+        nyd = date(year, 1, 1)
+        if nyd.weekday() == 6:
+            holidays.add(date(year, 1, 2))
+        elif nyd.weekday() < 5:
+            holidays.add(nyd)
+
+        # 2. Martin Luther King Jr. Day (3er lunes de enero)
+        holidays.add(nth_weekday(year, 1, 0, 3))
+        # 3. Washington's Birthday (3er lunes de febrero)
+        holidays.add(nth_weekday(year, 2, 0, 3))
+        # 4. Good Friday (Viernes Santo)
+        holidays.add(cls._easter_date(year) - timedelta(days=2))
+        # 5. Memorial Day (Último lunes de mayo)
+        holidays.add(last_weekday(year, 5, 0))
+        # 6. Juneteenth (19 de junio)
+        if year >= 2022:
+            add_observed(date(year, 6, 19))
+        # 7. Independence Day (4 de julio)
+        add_observed(date(year, 7, 4))
+        # 8. Labor Day (1er lunes de septiembre)
+        holidays.add(nth_weekday(year, 9, 0, 1))
+        # 9. Thanksgiving Day (4to jueves de noviembre)
+        holidays.add(nth_weekday(year, 11, 3, 4))
+        # 10. Christmas Day (25 de diciembre)
+        add_observed(date(year, 12, 25))
+
+        return {h for h in holidays if h is not None}
+
+    def is_nyse_open_day(self, date_obj):
+        """Verifica si la Bolsa de New York opera en la fecha indicada (Lunes a Viernes y no feriado NYSE)."""
+        if date_obj.weekday() >= 5:
+            return False
+        return date_obj not in self.get_nyse_holidays(date_obj.year)
+
     def analyze_strategy(self, current_price, ba_now):
         """
         Evalúa las condiciones de la estrategia: Vela apertura
         - Bolsa de New York 10:30 hs (horario Buenos Aires por la mañana)
+        - Únicamente cuando está abierta la Bolsa de New York (días hábiles y no feriados de NYSE)
         - Temporalidad: 1 min
         - Entrada en LONG: si la vela de apertura analizada es una vela roja (close < open)
         - Entrada en SHORT: si la vela de apertura analizada es una vela verde (close > open)
@@ -444,22 +532,30 @@ class BinanceOpeningCandleBot:
             target_dt = datetime.combine(today_date, sess_time, tzinfo=TZ_BA)
             session_key = f"{today_date.strftime('%Y%m%d')}_{s['bolsa']}"
 
-            # Diferencia en segundos respecto a la hora de apertura
-            diff_seconds = (ba_now - target_dt).total_seconds()
+            # Buscar la próxima sesión en la que la Bolsa de New York esté realmente abierta
+            candidate_date = today_date
+            candidate_dt = target_dt
+            if ba_now >= candidate_dt or not self.is_nyse_open_day(candidate_date):
+                candidate_date += timedelta(days=1)
+                while not self.is_nyse_open_day(candidate_date):
+                    candidate_date += timedelta(days=1)
+                candidate_dt = datetime.combine(candidate_date, sess_time, tzinfo=TZ_BA)
 
-            # Cálculo de la próxima apertura para monitoreo
-            time_until = target_dt - ba_now
-            if time_until.total_seconds() < 0:
-                target_tomorrow = target_dt + timedelta(days=1)
-                time_until = target_tomorrow - ba_now
-
+            time_until = candidate_dt - ba_now
             if next_session_diff is None or time_until < next_session_diff:
                 next_session_diff = time_until
                 next_session = {
                     "bolsa": s["bolsa"],
-                    "target_dt": target_dt,
+                    "target_dt": candidate_dt,
                     "diff": time_until
                 }
+
+            # Si hoy la Bolsa de New York no está abierta (fin de semana o feriado bursátil), no operar
+            if not self.is_nyse_open_day(today_date):
+                continue
+
+            # Diferencia en segundos respecto a la hora de apertura
+            diff_seconds = (ba_now - target_dt).total_seconds()
 
             # Ventana de evaluación de la vela de apertura:
             # La vela abre a las 10:30:00 y cierra a las 10:31:00 (60 segundos).
