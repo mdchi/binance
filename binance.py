@@ -5,7 +5,7 @@ Bot de trading automatico en Binance.com
 
 Modo Aislado
 Apalancamiento 10x 
-Monto: 100% de usdt de la cuenta futuros
+Monto: 90% de usdt de la cuenta futuros
 
 Estrategia: Vela apertura
 1) analizar la vela apertura en temporalidad 1 min
@@ -111,8 +111,8 @@ class BinanceOpeningCandleBot:
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_pct = float(os.getenv("MARGIN_PCT", "100.0"))
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "0.0"))  # 0.0 indica usar self.margin_pct (100%)
+        self.margin_pct = float(os.getenv("MARGIN_PCT", "90.0"))
+        self.margin_usdt = float(os.getenv("MARGIN_USDT", "0.0"))  # 0.0 indica usar self.margin_pct (90%)
         self.leverage = int(os.getenv("LEVERAGE", "10"))
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
@@ -596,7 +596,7 @@ class BinanceOpeningCandleBot:
         Ejecuta apertura de posición:
         - Modo Aislado
         - Apalancamiento 10x
-        - Monto: 100% de USDT de la cuenta futuros (o margen configurado)
+        - Monto: 90% de USDT de la cuenta futuros (o margen configurado)
         """
         margin_to_use = self.get_target_margin_usdt()
         notional_val = margin_to_use * self.leverage
