@@ -4,22 +4,22 @@
 Bot de trading automatico en Binance.com
 
 Modo Aislado
-Apalancamiento 60x 
-Monto: 50% de usdt de la cuenta futuros
+Apalancamiento 10x 
+Monto: 90% de usdt de la cuenta futuros
 
 Estrategia: Vela apertura
 1) analizar la vela apertura en temporalidad 1 min
 2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 
-2) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana) unicamente los dias que esta abierta la bolsa de new york
+2) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana)
 
 3) entrada en long: si la vela apertura analizada es una vela roja
-   TP: 10% de ganancia descontando comisiones
-   SL: 30% de perdida incluyendo comisiones
+   TP: 2% de ganancia descontando comisiones
+   SL: 6% de perdida incluyendo comisiones
 
 4) entrada en short: si la vela apertura analizada es una vela verde
-   TP: 10% de ganancia descontando comisiones
-   SL: 30% de perdida incluyento comisiones
+   TP: 2% de ganancia descontando comisiones
+   SL: 6% de perdida incluyendo comisiones
 
 El formato del estado actual para estrategia:
 en una linea: nombre de estrategia
@@ -111,14 +111,14 @@ class BinanceOpeningCandleBot:
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_pct = float(os.getenv("MARGIN_PCT", "50.0"))
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "0.0"))  # 0.0 indica usar self.margin_pct (50%)
-        self.leverage = int(os.getenv("LEVERAGE", "60"))
+        self.margin_pct = float(os.getenv("MARGIN_PCT", "90.0"))
+        self.margin_usdt = float(os.getenv("MARGIN_USDT", "0.0"))  # 0.0 indica usar self.margin_pct (90%)
+        self.leverage = int(os.getenv("LEVERAGE", "10"))
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "10.0"))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "30.0"))
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "2.0"))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "6.0"))
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "1.0"))
 
