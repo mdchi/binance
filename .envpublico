@@ -1,19 +1,19 @@
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
 SYMBOL=BTCUSDT
-# Monto: 90% del saldo disponible en USDT de la cuenta de futuros
-MARGIN_PCT=90.0
-LEVERAGE=10
+# Monto: 50% del saldo disponible en USDT de la cuenta de futuros
+MARGIN_PCT=50.0
+LEVERAGE=60
 MARGIN_TYPE=ISOLATED
 
 # Estrategia: Vela apertura
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# Take Profit: 2.0% de ganancia descontando comisiones
-TAKE_PROFIT_PCT=2.0
+# Take Profit: 10.0% de ganancia descontando comisiones
+TAKE_PROFIT_PCT=10.0
 
-# Stop Loss: 6.0% de perdida incluyendo comisiones
-STOP_LOSS_PCT=6.0
+# Stop Loss: 30.0% de perdida incluyendo comisiones
+STOP_LOSS_PCT=30.0
 
 # Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
 FEE_RATE_PCT=0.05
