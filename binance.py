@@ -3,43 +3,54 @@
 """
 Bot de trading automatico en Binance.com
 
-Modo Aislado
-Apalancamiento 10x 
-Monto: 90% de usdt de la cuenta futuros
-
 Estrategia: Vela apertura
-1) analizar la vela apertura en temporalidad 1 min
-2) hacer una sola entrada a la vez, no hacer varias entradas en simultaneo
 
-2) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana)
+1) Modo Aislado
+   Apalancamiento 60x 
+   Monto usdt de la cuenta futuros
 
-3) entrada en long: si la vela apertura analizada es una vela roja
-   TP: 2% de ganancia descontando comisiones
-   SL: 6% de perdida incluyendo comisiones
+2) analizar la vela apertura en temporalidad 1 min
 
-4) entrada en short: si la vela apertura analizada es una vela verde
-   TP: 2% de ganancia descontando comisiones
-   SL: 6% de perdida incluyendo comisiones
+3) hacer maximo 2 entradas a la vez, o sea en simultaneo
 
-El formato del estado actual para estrategia:
-en una linea: nombre de estrategia
-en otra linea: precio
-en otra linea: horario
-en otra linea: posicion
+4) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana) unicamente los dias que esta abierta la bolsa de new york
 
+5) ganancia bruta = ganancia con comisiones
+   ganancia real  = ganancia sin comisiones
+   perdida real   = perdida con comisiones
+
+6) entrada(1) en long  = si la vela apertura analizada es una vela roja,  monto 45% de la cuenta futuros
+   entrada(1) en short = si la vela apertura analizada es una vela verde, monto 45% de la cuenta futuros
+
+7) TP(1) = 9% de ganancia real
+   SL(1) = 30% de perdida real
+
+8) si perdida real > 15% = hacer entrada(2) long/short igual direccion a la entrada abierta actual,  monto 45% de la cuenta futuros
+   TP(1) = cambiarlo a valor entrada(1)
+   SL(1) = no cambia
+   TP(2) = valor entrada(1)
+   SL(2) = SL(1)
+   
 Detalles:
-1) Cerrar posiciones abiertas al iniciar bot
 
-2) hacer archivo 2ganadas.txt donde van las operaciones que se ganaron y archivo 2perdidas.txt donde van las opereciones que se perdieron, con columnas alineadas, con los datos:
-dia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion
+1) El formato del estado actual para estrategia:
+   en una linea: nombre de estrategia
+   en otra linea: precio
+   en otra linea: horario
+   en otra linea: posicion
 
-3) Mantener cabecera siempre visible en pantalla.
-Mantener visible en pantalla unicamente el estado actual.
-No utilizar colores en todo el texto visualizado en pantalla.
-Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualizacion de datos en vez de borrar la pantalla por completo.
-Hacer operaciones con dinero real.
+2) Cerrar posiciones abiertas al iniciar bot
 
-4) .envprivado con la configuracion de api de binance 
+3) hacer archivo 2datos.txt donde van las operaciones que se ganaron y las operaciones que se perdieron, con columnas alineadas, con los datos:
+   dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, % ganancia real, %ganancia bruta, %perdida real
+
+4) Mantener cabecera siempre visible en pantalla
+   Mantener visible en pantalla unicamente el estado actual
+   No utilizar colores en todo el texto visualizado en pantalla
+   Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualizacion de datos en vez de borrar la pantalla por completo
+   Hacer operaciones con dinero real
+
+5) .envprivado con la configuracion de api de binance 
    .envpublico con el resto de parametros
 """
 
@@ -55,9 +66,8 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 
-# Zona horaria de Buenos Aires (UTC-3) y New York (ET)
+# Zona horaria de Buenos Aires (UTC-3)
 TZ_BA = ZoneInfo("America/Argentina/Buenos_Aires")
-TZ_NY = ZoneInfo("America/New_York")
 
 # 1. Configuración de consola Windows para soporte ANSI/VT
 if os.name == 'nt':
@@ -111,14 +121,17 @@ class BinanceOpeningCandleBot:
 
         # Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
-        self.margin_pct = float(os.getenv("MARGIN_PCT", "90.0"))
-        self.margin_usdt = float(os.getenv("MARGIN_USDT", "0.0"))  # 0.0 indica usar self.margin_pct (90%)
-        self.leverage = int(os.getenv("LEVERAGE", "10"))
+        self.entry1_pct = float(os.getenv("ENTRY1_PCT", "45.0"))
+        self.entry2_pct = float(os.getenv("ENTRY2_PCT", "45.0"))
+        self.leverage = int(os.getenv("LEVERAGE", "60"))
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
         self.timeframe = os.getenv("TIMEFRAME", "1m")
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "2.0"))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "6.0"))
+
+        # Reglas de salida y comisiones
+        self.tp1_gain_real_pct = float(os.getenv("TP1_GAIN_REAL_PCT", "9.0"))
+        self.sl1_loss_real_pct = float(os.getenv("SL1_LOSS_REAL_PCT", "30.0"))
+        self.entry2_trigger_loss_real_pct = float(os.getenv("ENTRY2_TRIGGER_LOSS_REAL_PCT", "15.0"))
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
         self.poll_interval = float(os.getenv("POLL_INTERVAL_SEC", "1.0"))
 
@@ -126,7 +139,7 @@ class BinanceOpeningCandleBot:
         self.dry_run = os.getenv("DRY_RUN", "False").lower() in ("true", "1", "yes")
         self.use_testnet = os.getenv("USE_TESTNET", "False").lower() in ("true", "1", "yes")
 
-        # Configuración de apertura: Bolsa de New York 10:30 hs (Horario Buenos Aires)
+        # Apertura: New York 10:30 hs (Horario Buenos Aires)
         self.sessions = [
             {"bolsa": "NEW YORK", "hour": 10, "minute": 30}
         ]
@@ -139,19 +152,19 @@ class BinanceOpeningCandleBot:
         self.tick_size = 0.01
         self.step_size = 0.001
         self.last_execution_error = None
-        self.actual_margin_used = 0.0
 
         # Control de velas analizadas (clave: "YYYY-MM-DD_BOLSA")
         self.processed_sessions = set()
 
-        # Estado de posición activa (una sola entrada a la vez)
-        self.current_position = None  # None, 'LONG', 'SHORT'
-        self.entry_price = 0.0
-        self.position_qty = 0.0
-        self.entry_time = None
+        # Estructura de posiciones (máximo 2 entradas simultáneas)
+        # entry_1: {'side': 'LONG'/'SHORT', 'price': float, 'qty': float, 'margin': float, 'time': datetime}
+        # entry_2: {'side': 'LONG'/'SHORT', 'price': float, 'qty': float, 'margin': float, 'time': datetime}
+        self.entry_1 = None
+        self.entry_2 = None
         self.simulated_balance = 50.0
 
         # Métricas de la operación en curso
+        self.trade_start_time = None
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
 
@@ -163,27 +176,29 @@ class BinanceOpeningCandleBot:
         self.money_lost = 0.0
 
         # Inicialización de archivos y conexión
-        self._init_trade_log_files()
+        self._init_trade_log_file()
         self._initialize_client()
 
-    def _init_trade_log_files(self):
-        """DETALLES 2: Inicializar 2ganadas.txt y 2perdidas.txt con columnas: dia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion."""
-        header = f"{'Dia':<10} | {'Hora':<8} | {'% Ganancia Max':<15} | {'% Perdida Max':<15} | {'Duracion':<10}\n"
-        separator = "-" * 70 + "\n"
-        for filename in ["2ganadas.txt", "2perdidas.txt"]:
-            if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-                try:
-                    with open(filename, "w", encoding="utf-8") as f:
-                        f.write(header)
-                        f.write(separator)
-                except Exception as e:
-                    logging.error(f"Error inicializando {filename}: {e}")
+    def _init_trade_log_file(self):
+        """DETALLES 3: Inicializar 2datos.txt con columnas alineadas."""
+        filename = "2datos.txt"
+        header = (
+            f"{'Dia':<10} | {'Hora':<8} | {'Estado':<10} | {'Duracion':<10} | "
+            f"{'% Gan Max':<10} | {'% Perd Max':<10} | {'% Gan Real':<11} | {'% Gan Bruta':<11} | {'% Perd Real':<11}\n"
+        )
+        separator = "-" * 105 + "\n"
+        if not os.path.exists(filename) or os.path.getsize(filename) == 0:
+            try:
+                with open(filename, "w", encoding="utf-8") as f:
+                    f.write(header)
+                    f.write(separator)
+            except Exception as e:
+                logging.error(f"Error inicializando {filename}: {e}")
 
     def _initialize_client(self):
-        """Inicializa cliente Binance, configura modo AISLADO 10x y cierra posiciones previas."""
-        monto_desc = f"{self.margin_usdt:.2f} USDT" if self.margin_usdt > 0 else f"{self.margin_pct:.0f}% de la cuenta USDT"
+        """Inicializa cliente Binance, configura modo AISLADO 60x y cierra posiciones previas."""
         logging.info("Iniciando Bot Binance Vela apertura (New York 10:30 hs)...")
-        logging.info(f"Símbolo: {self.symbol} | Margen: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {monto_desc}")
+        logging.info(f"Símbolo: {self.symbol} | Margen: {self.margin_type} | Apalancamiento: {self.leverage}x | Entradas: 45% + 45%")
 
         try:
             if self.api_key and self.api_secret:
@@ -202,7 +217,7 @@ class BinanceOpeningCandleBot:
             else:
                 logging.info("Modo de simulación (DRY-RUN) activo o sin API keys configuradas.")
 
-            # DETALLES 1: Cerrar posiciones abiertas al iniciar bot
+            # DETALLES 2: Cerrar posiciones abiertas al iniciar bot
             self.close_existing_positions()
 
         except Exception as e:
@@ -244,7 +259,7 @@ class BinanceOpeningCandleBot:
         return max(rounded, self.min_qty)
 
     def _setup_futures_account(self):
-        """Configura margen AISLADO (ISOLATED) y apalancamiento 10x en Binance Futures."""
+        """Configura margen AISLADO (ISOLATED) y apalancamiento 60x en Binance Futures."""
         try:
             try:
                 self.client.futures_change_margin_type(symbol=self.symbol, marginType='ISOLATED')
@@ -260,15 +275,10 @@ class BinanceOpeningCandleBot:
             logging.error(f"Error configurando cuenta de futuros: {e}")
 
     def close_existing_positions(self):
-        """DETALLES 1: Cerrar posiciones abiertas al iniciar bot."""
-        logging.info("DETALLES 1: Verificando y cerrando cualquier posición abierta al iniciar el bot...")
+        """DETALLES 2: Cerrar posiciones abiertas al iniciar bot."""
+        logging.info("DETALLES 2: Verificando y cerrando cualquier posición abierta al iniciar el bot...")
         if self.dry_run:
-            self.current_position = None
-            self.entry_price = 0.0
-            self.position_qty = 0.0
-            self.entry_time = None
-            self.max_gain_pct = 0.0
-            self.max_loss_pct = 0.0
+            self._reset_position_state()
             return
 
         if not self.client or not self.api_key or not self.api_secret:
@@ -310,20 +320,27 @@ class BinanceOpeningCandleBot:
             if not closed_any:
                 logging.info(f"No hay posiciones abiertas previas para {self.symbol}.")
 
-            self.current_position = None
-            self.entry_price = 0.0
-            self.position_qty = 0.0
-            self.entry_time = None
-            self.max_gain_pct = 0.0
-            self.max_loss_pct = 0.0
+            self._reset_position_state()
 
         except Exception as e:
             logging.error(f"Error al cerrar posiciones existentes: {e}")
 
-    def get_active_position(self):
-        """Consulta la posición actualmente abierta en Binance Futures."""
+    def _reset_position_state(self):
+        self.entry_1 = None
+        self.entry_2 = None
+        self.trade_start_time = None
+        self.max_gain_pct = 0.0
+        self.max_loss_pct = 0.0
+
+    def get_binance_open_position(self):
+        """Consulta la posición neta actualmente abierta en Binance Futures."""
         if self.dry_run:
-            return self.current_position, self.entry_price, self.position_qty
+            if self.entry_1:
+                tot_qty = self.entry_1['qty'] + (self.entry_2['qty'] if self.entry_2 else 0.0)
+                tot_margin = self.entry_1['margin'] + (self.entry_2['margin'] if self.entry_2 else 0.0)
+                avg_entry = (self.entry_1['price'] * self.entry_1['qty'] + (self.entry_2['price'] * self.entry_2['qty'] if self.entry_2 else 0.0)) / tot_qty
+                return self.entry_1['side'], avg_entry, tot_qty
+            return None, 0.0, 0.0
 
         try:
             positions = self.client.futures_position_information(symbol=self.symbol)
@@ -337,35 +354,30 @@ class BinanceOpeningCandleBot:
             return None, 0.0, 0.0
         except Exception as e:
             logging.error(f"Error consultando posiciones activas: {e}")
-            return self.current_position, self.entry_price, self.position_qty
+            if self.entry_1:
+                tot_qty = self.entry_1['qty'] + (self.entry_2['qty'] if self.entry_2 else 0.0)
+                avg_entry = (self.entry_1['price'] * self.entry_1['qty'] + (self.entry_2['price'] * self.entry_2['qty'] if self.entry_2 else 0.0)) / tot_qty
+                return self.entry_1['side'], avg_entry, tot_qty
+            return None, 0.0, 0.0
 
-    def get_available_balance(self):
-        """Consulta el saldo USDT disponible en la cuenta de Binance Futures."""
+    def get_account_balance(self):
+        """Consulta el saldo USDT de la cuenta futuros (totalWalletBalance y availableBalance)."""
         if self.dry_run or not self.client or not self.api_key or not self.api_secret:
-            return self.simulated_balance
+            return self.simulated_balance, self.simulated_balance
 
         try:
             acc = self.client.futures_account()
-            # Buscar balance específico de USDT en assets o availableBalance
+            total_bal = float(acc.get('totalWalletBalance', 0.0))
             avail = float(acc.get('availableBalance', 0.0))
             for asset in acc.get('assets', []):
                 if asset.get('asset') == 'USDT':
+                    total_bal = float(asset.get('walletBalance', total_bal))
                     avail = float(asset.get('availableBalance', avail))
                     break
-            return avail
+            return total_bal, avail
         except Exception as e:
-            logging.error(f"Error consultando balance disponible de USDT: {e}")
-            return 0.0
-
-    def get_target_margin_usdt(self):
-        """Calcula el margen a utilizar en USDT según configuración (100% de la cuenta o fijo)."""
-        if self.margin_usdt > 0.0:
-            return self.margin_usdt
-        avail = self.get_available_balance()
-        target = (avail * (self.margin_pct / 100.0))
-        # Asegurar un margen de seguridad mínimo (descontando pequeña fracción para comisiones de margen si aplica)
-        margin = max(0.0, target * 0.995)
-        return margin
+            logging.error(f"Error consultando balance USDT: {e}")
+            return 0.0, 0.0
 
     def get_latest_price(self):
         """Obtiene el precio más reciente de Binance Futures."""
@@ -378,14 +390,12 @@ class BinanceOpeningCandleBot:
 
     def fetch_opening_candle(self, target_dt_ba):
         """
-        Obtiene la vela de 1 minuto correspondiente al horario de apertura especificado (horario Buenos Aires).
-        target_dt_ba: datetime con TZ_BA del minuto exacto de apertura (10:30:00).
-        Retorna: dict con {open, high, low, close, is_closed} o None.
+        Obtiene la vela de 1 minuto de la apertura (horario Buenos Aires).
+        Retorna dict con {open, high, low, close, is_closed} o None.
         """
         try:
-            # Convertir el datetime de BA a timestamp UTC en milisegundos
             start_ts = int(target_dt_ba.timestamp() * 1000)
-            end_ts = start_ts + 60000  # 1 minuto después
+            end_ts = start_ts + 60000
 
             klines = self.client.futures_klines(
                 symbol=self.symbol,
@@ -406,7 +416,6 @@ class BinanceOpeningCandleBot:
             close_p = float(k[4])
             candle_close_time = int(k[6])
 
-            # Verificar si la vela ya cerró (tiempo actual >= close_time)
             now_ms = int(time.time() * 1000)
             is_closed = now_ms >= candle_close_time
 
@@ -425,7 +434,7 @@ class BinanceOpeningCandleBot:
 
     @staticmethod
     def _easter_date(year):
-        """Calcula el Domingo de Pascua para determinar Viernes Santo (Good Friday)."""
+        """Calcula el Domingo de Pascua para determinar Viernes Santo."""
         a = year % 19
         b = year // 100
         c = year % 100
@@ -513,16 +522,14 @@ class BinanceOpeningCandleBot:
         """
         Evalúa las condiciones de la estrategia: Vela apertura
         - Bolsa de New York 10:30 hs (horario Buenos Aires por la mañana)
-        - Únicamente cuando está abierta la Bolsa de New York (días hábiles y no feriados de NYSE)
+        - Únicamente los días que está abierta la bolsa de new york
         - Temporalidad: 1 min
-        - Entrada en LONG: si la vela de apertura analizada es una vela roja (close < open)
-        - Entrada en SHORT: si la vela de apertura analizada es una vela verde (close > open)
+        - Entrada(1) en long: vela roja (close < open)
+        - Entrada(1) en short: vela verde (close > open)
         """
         today_date = ba_now.date()
-
         next_session = None
         next_session_diff = None
-
         signal = None
         signal_bolsa = None
         candle_info = None
@@ -532,7 +539,7 @@ class BinanceOpeningCandleBot:
             target_dt = datetime.combine(today_date, sess_time, tzinfo=TZ_BA)
             session_key = f"{today_date.strftime('%Y%m%d')}_{s['bolsa']}"
 
-            # Buscar la próxima sesión en la que la Bolsa de New York esté realmente abierta
+            # Próxima sesión bursátil abierta
             candidate_date = today_date
             candidate_dt = target_dt
             if ba_now >= candidate_dt or not self.is_nyse_open_day(candidate_date):
@@ -550,31 +557,26 @@ class BinanceOpeningCandleBot:
                     "diff": time_until
                 }
 
-            # Si hoy la Bolsa de New York no está abierta (fin de semana o feriado bursátil), no operar
+            # Si hoy la Bolsa de New York no está abierta, no operar
             if not self.is_nyse_open_day(today_date):
                 continue
 
-            # Diferencia en segundos respecto a la hora de apertura
             diff_seconds = (ba_now - target_dt).total_seconds()
 
-            # Ventana de evaluación de la vela de apertura:
-            # La vela abre a las 10:30:00 y cierra a las 10:31:00 (60 segundos).
-            # Analizamos entre los 60 y 300 segundos posteriores a la apertura.
+            # La vela abre a las 10:30:00 y cierra a las 10:31:00.
+            # Evaluamos entre 60 y 300 segundos posteriores a la apertura.
             if 60 <= diff_seconds <= 300:
                 if session_key not in self.processed_sessions:
                     candle = self.fetch_opening_candle(target_dt)
                     if candle and candle["is_closed"]:
                         candle_info = candle
                         if candle["close"] < candle["open"]:
-                            # Vela roja -> Entrada en LONG
                             signal = "LONG"
                             signal_bolsa = s["bolsa"]
                         elif candle["close"] > candle["open"]:
-                            # Vela verde -> Entrada en SHORT
                             signal = "SHORT"
                             signal_bolsa = s["bolsa"]
                         else:
-                            # Vela doji neutral
                             logging.info(f"Vela de apertura {s['bolsa']} doji neutral ({candle['open']} == {candle['close']}).")
                             self.processed_sessions.add(session_key)
 
@@ -591,43 +593,53 @@ class BinanceOpeningCandleBot:
             "next_session": next_session
         }
 
-    def open_position(self, side, current_price, bolsa):
+    def execute_entry(self, entry_num, side, current_price):
         """
-        Ejecuta apertura de posición:
+        Ejecuta entrada 1 o entrada 2:
         - Modo Aislado
-        - Apalancamiento 10x
-        - Monto: 90% de USDT de la cuenta futuros (o margen configurado)
+        - Apalancamiento 60x
+        - Monto: 45% de la cuenta futuros
         """
-        margin_to_use = self.get_target_margin_usdt()
-        notional_val = margin_to_use * self.leverage
-        qty = self._format_quantity(notional_val / current_price)
-        self.actual_margin_used = (qty * current_price) / self.leverage
+        total_bal, avail_bal = self.get_account_balance()
+        # Monto 45% de la cuenta futuros
+        base_bal = total_bal if total_bal > 0 else avail_bal
+        target_margin = base_bal * 0.45
+        target_margin = min(target_margin, avail_bal * 0.98)
 
-        if qty < self.min_qty or self.actual_margin_used <= 0:
-            err_msg = f"Margen insuficiente para operar {self.symbol} (Disponible: ${margin_to_use:.2f} USDT, Mínimo requerido: {self.min_qty} {self.symbol})"
+        notional = target_margin * self.leverage
+        qty = self._format_quantity(notional / current_price)
+        actual_margin = (qty * current_price) / self.leverage
+
+        if qty < self.min_qty or actual_margin <= 0:
+            err_msg = f"Margen insuficiente para entrada({entry_num}) (Disp: ${avail_bal:.2f} USDT, Mínimo requerido: {self.min_qty} {self.symbol})"
             logging.error(err_msg)
             self.last_execution_error = err_msg
             return False
 
-        logging.info(f"EJECUTANDO ENTRADA {side} ({bolsa}): Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f}")
+        logging.info(f"EJECUTANDO ENTRADA({entry_num}) {side}: Margen ${actual_margin:.2f} USDT (45%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f}")
+
+        now = datetime.now()
+        entry_data = {
+            'side': side,
+            'price': current_price,
+            'qty': qty,
+            'margin': actual_margin,
+            'time': now
+        }
 
         if self.dry_run:
-            self.current_position = side
-            self.entry_price = current_price
-            self.position_qty = qty
-            self.entry_time = datetime.now()
-            self.max_gain_pct = 0.0
-            self.max_loss_pct = 0.0
+            if entry_num == 1:
+                self.entry_1 = entry_data
+                self.entry_2 = None
+                self.trade_start_time = now
+                self.max_gain_pct = 0.0
+                self.max_loss_pct = 0.0
+            elif entry_num == 2:
+                self.entry_2 = entry_data
             self.last_execution_error = None
             return True
 
         try:
-            # Cancelar órdenes abiertas previas antes de entrar
-            try:
-                self.client.futures_cancel_all_open_orders(symbol=self.symbol)
-            except Exception:
-                pass
-
             order_side = 'BUY' if side == 'LONG' else 'SELL'
             order = self.client.futures_create_order(
                 symbol=self.symbol,
@@ -635,77 +647,207 @@ class BinanceOpeningCandleBot:
                 type='MARKET',
                 quantity=qty
             )
-            logging.info(f"Orden de apertura enviada a Binance: OrderID={order.get('orderId')}")
+            logging.info(f"Orden entrada({entry_num}) enviada: OrderID={order.get('orderId')}")
 
-            # Pausa para confirmar llenado
             time.sleep(1)
-            active_side, real_entry, real_qty = self.get_active_position()
-            if real_entry > 0:
-                current_price = real_entry
-                qty = real_qty
+            # Consultar precio y posición real
+            active_side, real_entry, real_qty = self.get_binance_open_position()
+            if entry_num == 1:
+                if real_entry > 0:
+                    entry_data['price'] = real_entry
+                    entry_data['qty'] = real_qty
+                    entry_data['margin'] = (real_qty * real_entry) / self.leverage
+                self.entry_1 = entry_data
+                self.entry_2 = None
+                self.trade_start_time = now
+                self.max_gain_pct = 0.0
+                self.max_loss_pct = 0.0
+            elif entry_num == 2:
+                # Para la entrada 2, calculamos el precio y cantidad incremental agregada
+                if self.entry_1 and real_qty > self.entry_1['qty']:
+                    delta_qty = self._format_quantity(real_qty - self.entry_1['qty'])
+                    entry_data['qty'] = delta_qty
+                    entry_data['margin'] = (delta_qty * current_price) / self.leverage
+                self.entry_2 = entry_data
 
-            self.current_position = side
-            self.entry_price = current_price
-            self.position_qty = qty
-            self.actual_margin_used = (qty * current_price) / self.leverage
-            self.entry_time = datetime.now()
-            self.max_gain_pct = 0.0
-            self.max_loss_pct = 0.0
             self.last_execution_error = None
             return True
 
         except Exception as e:
-            self.last_execution_error = f"Error Binance: {e}"
-            logging.error(f"Error al abrir posición en Binance Futures: {e}")
+            self.last_execution_error = f"Error Binance entrada({entry_num}): {e}"
+            logging.error(f"Error abriendo entrada({entry_num}): {e}")
             return False
 
-    def check_exit_condition(self, current_price):
+    def calculate_pnl(self, current_price):
         """
-        Reglas de salida:
-        - TP: 2% de ganancia descontando comisiones
-        - SL: 6% de perdida incluyendo comisiones
-        """
-        if not self.current_position or self.entry_price <= 0:
-            return False, None
+        Cálculo riguroso de PnL según especificación:
+        - ganancia bruta = ganancia con comisiones (antes de descontar comisiones)
+        - ganancia real  = ganancia sin comisiones (ganancia pura del movimiento del precio, libre de comisiones)
+        - perdida real   = perdida con comisiones (perdida del movimiento + costo de comisiones)
 
-        # ROE bruto sobre el margen (%):
-        if self.current_position == 'LONG':
-            gross_pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
+        Retorna diccionario con métricas en % sobre el margen y en USDT para la posición completa.
+        """
+        if not self.entry_1:
+            return None
+
+        entries = [self.entry_1]
+        if self.entry_2:
+            entries.append(self.entry_2)
+
+        tot_margin = sum(e['margin'] for e in entries)
+        tot_qty = sum(e['qty'] for e in entries)
+        if tot_margin <= 0 or tot_qty <= 0:
+            return None
+
+        side = self.entry_1['side']
+
+        # PnL puro de movimiento (Price Delta USDT)
+        price_delta_usdt = 0.0
+        for e in entries:
+            if side == 'LONG':
+                price_delta_usdt += (current_price - e['price']) * e['qty']
+            else:
+                price_delta_usdt += (e['price'] - current_price) * e['qty']
+
+        # Comisión acumulada estimada (apertura + cierre)
+        # Tasa de comision * notional
+        open_notional = sum(e['price'] * e['qty'] for e in entries)
+        close_notional = current_price * tot_qty
+        total_fees_usdt = (open_notional + close_notional) * (self.fee_rate_pct / 100.0)
+
+        # Reglas:
+        # Ganancia bruta: antes de comisiones (price_delta)
+        # Ganancia real: ganancia sin comisiones (price_delta - fees)
+        # Perdida real: perdida con comisiones (|price_delta| + fees si está en contra)
+        gross_pnl_usdt = price_delta_usdt
+        net_pnl_usdt = price_delta_usdt - total_fees_usdt
+
+        # Porcentajes sobre el margen invertido
+        gross_pnl_pct = (gross_pnl_usdt / tot_margin) * 100.0
+        fee_pct = (total_fees_usdt / tot_margin) * 100.0
+
+        gain_gross_pct = max(0.0, gross_pnl_pct)
+        gain_real_pct = max(0.0, gross_pnl_pct - fee_pct)
+
+        if gross_pnl_pct < 0:
+            loss_real_pct = abs(gross_pnl_pct) + fee_pct
         else:
-            gross_pnl_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
+            loss_real_pct = max(0.0, fee_pct - gross_pnl_pct) if (gross_pnl_pct - fee_pct) < 0 else 0.0
 
-        # Impacto de comisiones (apertura + cierre) sobre el margen (%):
-        # 2 órdenes * fee_rate * apalancamiento
-        fee_impact_pct = 2.0 * self.fee_rate_pct * self.leverage
+        # ROE general (neto)
+        net_roe_pct = gross_pnl_pct - fee_pct
 
-        # PnL neto en % sobre el margen
-        net_pnl_pct = gross_pnl_pct - fee_impact_pct
+        return {
+            'side': side,
+            'tot_margin': tot_margin,
+            'tot_qty': tot_qty,
+            'gross_pnl_usdt': gross_pnl_usdt,
+            'net_pnl_usdt': net_pnl_usdt,
+            'fees_usdt': total_fees_usdt,
+            'gain_gross_pct': gain_gross_pct,
+            'gain_real_pct': gain_real_pct,
+            'loss_real_pct': loss_real_pct,
+            'net_roe_pct': net_roe_pct
+        }
 
-        # TP: 2% de ganancia descontando comisiones
-        if net_pnl_pct >= self.take_profit_pct:
-            return True, f"TP alcanzado (Neto: +{net_pnl_pct:.2f}% >= +{self.take_profit_pct:.2f}%)"
+    def calculate_single_entry_loss_real(self, entry_dict, current_price):
+        """Calcula la pérdida real (% con comisiones) de una entrada individual."""
+        side = entry_dict['side']
+        margin = entry_dict['margin']
+        qty = entry_dict['qty']
+        price = entry_dict['price']
 
-        # SL: 6% de perdida incluyendo comisiones
-        if net_pnl_pct <= -abs(self.stop_loss_pct):
-            return True, f"SL alcanzado (Neto: {net_pnl_pct:.2f}% <= -{abs(self.stop_loss_pct):.2f}%)"
+        if side == 'LONG':
+            delta_usdt = (current_price - price) * qty
+        else:
+            delta_usdt = (price - current_price) * qty
 
-        return False, None
+        fees_usdt = (price * qty + current_price * qty) * (self.fee_rate_pct / 100.0)
+        net_usdt = delta_usdt - fees_usdt
 
-    def close_position(self, current_price, reason="Take Profit alcanzado"):
-        """Cierra la posición actual a mercado y registra en 2ganadas.txt o 2perdidas.txt."""
-        if not self.current_position:
+        if net_usdt < 0:
+            return (abs(net_usdt) / margin) * 100.0
+        return 0.0
+
+    def check_position_rules(self, current_price):
+        """
+        Evalúa reglas 7 y 8:
+        Si solo entrada(1) activa:
+          - TP(1) = 9% de ganancia real
+          - SL(1) = 30% de perdida real
+          - Si perdida real > 15% -> ejecutar entrada(2) mismo sentido (monto 45%)
+            Al activarse entrada(2):
+            TP(1) = valor entrada(1)
+            SL(1) = no cambia (30% de pérdida real de entrada 1)
+            TP(2) = valor entrada(1)
+            SL(2) = SL(1)
+
+        Si ambas entradas activas:
+          - TP: cuando el precio alcance el valor de entrada(1)
+            (En Long: current_price >= entry_1['price']; En Short: current_price <= entry_1['price'])
+          - SL: cuando la pérdida real alcance el SL(1) correspondiente.
+        """
+        if not self.entry_1:
+            return None, None
+
+        pnl = self.calculate_pnl(current_price)
+        if not pnl:
+            return None, None
+
+        side = self.entry_1['side']
+
+        # Caso A: Solo entrada 1 activa
+        if self.entry_2 is None:
+            # 1. Chequear TP(1) = 9% ganancia real
+            if pnl['gain_real_pct'] >= self.tp1_gain_real_pct:
+                return "CLOSE", f"TP(1) alcanzado: Ganancia real {pnl['gain_real_pct']:.2f}% >= {self.tp1_gain_real_pct:.1f}%"
+
+            # 2. Chequear si perdida real > 15% para abrir entrada 2
+            if pnl['loss_real_pct'] > self.entry2_trigger_loss_real_pct:
+                # Comprobar primero que no haya saltado SL(1) directamente
+                if pnl['loss_real_pct'] >= self.sl1_loss_real_pct:
+                    return "CLOSE", f"SL(1) alcanzado: Perdida real {pnl['loss_real_pct']:.2f}% >= {self.sl1_loss_real_pct:.1f}%"
+                return "OPEN_ENTRY_2", f"Perdida real {pnl['loss_real_pct']:.2f}% > 15% -> Gatillar entrada(2)"
+
+            # 3. Chequear SL(1) = 30% perdida real
+            if pnl['loss_real_pct'] >= self.sl1_loss_real_pct:
+                return "CLOSE", f"SL(1) alcanzado: Perdida real {pnl['loss_real_pct']:.2f}% >= {self.sl1_loss_real_pct:.1f}%"
+
+        # Caso B: Ambas entradas activas
+        else:
+            target_entry1_price = self.entry_1['price']
+
+            # TP conjunto: valor de entrada(1)
+            if side == 'LONG' and current_price >= target_entry1_price:
+                return "CLOSE", f"TP(1 & 2) alcanzado: Precio ${current_price:.2f} >= Entrada(1) ${target_entry1_price:.2f}"
+            elif side == 'SHORT' and current_price <= target_entry1_price:
+                return "CLOSE", f"TP(1 & 2) alcanzado: Precio ${current_price:.2f} <= Entrada(1) ${target_entry1_price:.2f}"
+
+            # SL conjunto: SL(2) = SL(1) = 30% de perdida real sobre el trade
+            entry1_loss = self.calculate_single_entry_loss_real(self.entry_1, current_price)
+            if entry1_loss >= self.sl1_loss_real_pct or pnl['loss_real_pct'] >= self.sl1_loss_real_pct:
+                return "CLOSE", f"SL(1 & 2) alcanzado: Perdida real {pnl['loss_real_pct']:.2f}% >= SL {self.sl1_loss_real_pct:.1f}%"
+
+        return None, None
+
+    def close_all_positions(self, current_price, reason="Salida de posicion"):
+        """Cierra la totalidad de la posición en Binance y registra métricas en 2datos.txt."""
+        if not self.entry_1:
             return
 
-        side = self.current_position
-        logging.info(f"CERRANDO POSICION {side} por {reason} @ ${current_price:.2f}...")
+        pnl = self.calculate_pnl(current_price)
+        side = self.entry_1['side']
+        tot_qty = self.entry_1['qty'] + (self.entry_2['qty'] if self.entry_2 else 0.0)
+
+        logging.info(f"CERRANDO POSICION TOTAL {side} ({tot_qty} {self.symbol}) por {reason} @ ${current_price:.2f}...")
 
         exit_time = datetime.now()
-        dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
+        dur_mins = (exit_time - self.trade_start_time).total_seconds() / 60.0 if self.trade_start_time else 0.0
 
         if not self.dry_run and self.client:
             try:
                 side_to_close = 'SELL' if side == 'LONG' else 'BUY'
-                qty = self._format_quantity(self.position_qty)
+                qty = self._format_quantity(tot_qty)
                 self.client.futures_create_order(
                     symbol=self.symbol,
                     side=side_to_close,
@@ -713,69 +855,63 @@ class BinanceOpeningCandleBot:
                     quantity=qty,
                     reduceOnly=True
                 )
-                logging.info(f"Orden MARKET de cierre {side} ejecutada.")
+                logging.info(f"Orden MARKET de cierre total ({qty} {self.symbol}) ejecutada con éxito.")
             except Exception as e:
-                logging.error(f"Error ejecutando orden de cierre en Binance: {e}")
+                logging.error(f"Error enviando orden de cierre a Binance: {e}")
 
-        # Cálculo de PnL bruto
-        if side == 'LONG':
-            gross_pnl_usdt = (current_price - self.entry_price) * self.position_qty
-        else:
-            gross_pnl_usdt = (self.entry_price - current_price) * self.position_qty
-
-        # Comisión estimada total (apertura y cierre)
-        entry_notional = self.entry_price * self.position_qty
-        exit_notional = current_price * self.position_qty
-        total_fees = (entry_notional + exit_notional) * (self.fee_rate_pct / 100.0)
-
-        # PnL neto considerando comisiones
-        net_pnl_usdt = gross_pnl_usdt - total_fees
+        # PnL y registro en archivo
+        net_usdt = pnl['net_pnl_usdt'] if pnl else 0.0
+        gain_real = pnl['gain_real_pct'] if pnl else 0.0
+        gain_gross = pnl['gain_gross_pct'] if pnl else 0.0
+        loss_real = pnl['loss_real_pct'] if pnl else 0.0
 
         if self.dry_run:
-            self.simulated_balance += net_pnl_usdt
+            self.simulated_balance += net_usdt
 
-        # Actualizar métricas y guardar en archivo correspondiente (2ganadas.txt o 2perdidas.txt)
-        self._record_and_save_trade(
-            pnl_usdt=net_pnl_usdt,
-            max_gain_pct=self.max_gain_pct,
-            max_loss_pct=self.max_loss_pct,
+        # Registrar en 2datos.txt
+        self._record_trade_in_2datos(
+            exit_time=exit_time,
             dur_mins=dur_mins,
-            exit_time=exit_time
+            net_usdt=net_usdt,
+            gain_real_pct=gain_real,
+            gain_gross_pct=gain_gross,
+            loss_real_pct=loss_real
         )
 
-        # Resetear estado de posición
-        self.current_position = None
-        self.entry_price = 0.0
-        self.position_qty = 0.0
-        self.entry_time = None
-        self.max_gain_pct = 0.0
-        self.max_loss_pct = 0.0
+        # Resetear estado
+        self._reset_position_state()
 
-    def _record_and_save_trade(self, pnl_usdt, max_gain_pct, max_loss_pct, dur_mins, exit_time):
+    def _record_trade_in_2datos(self, exit_time, dur_mins, net_usdt, gain_real_pct, gain_gross_pct, loss_real_pct):
         """
-        DETALLES 2:
-        - 2ganadas.txt donde van las operaciones que se ganaron
-        - 2perdidas.txt donde van las operaciones que se perdieron
-        Columnas alineadas:
-        dia, hora, % ganancia maximo, % perdida maximo, duracion de la operacion
+        DETALLES 3:
+        hacer archivo 2datos.txt donde van las operaciones que se ganaron y las operaciones que se perdieron,
+        con columnas alineadas, con los datos:
+        dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, % ganancia real, %ganancia bruta, %perdida real
         """
-        if pnl_usdt > 0:
+        filename = "2datos.txt"
+        is_won = net_usdt > 0
+        if is_won:
             self.winning_trades += 1
-            self.money_won += pnl_usdt
-            filename = "2ganadas.txt"
+            self.money_won += net_usdt
+            estado_str = "GANADA"
         else:
             self.losing_trades += 1
-            self.money_lost += abs(pnl_usdt)
-            filename = "2perdidas.txt"
+            self.money_lost += abs(net_usdt)
+            estado_str = "PERDIDA"
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
-
-        gain_str = f"+{max_gain_pct:.2f}%"
-        loss_str = f"{max_loss_pct:.2f}%"
         dur_str = f"{dur_mins:.1f} min"
+        max_gain_str = f"+{self.max_gain_pct:.2f}%"
+        max_loss_str = f"-{self.max_loss_pct:.2f}%"
+        gain_real_str = f"+{gain_real_pct:.2f}%" if gain_real_pct > 0 else "0.00%"
+        gain_gross_str = f"+{gain_gross_pct:.2f}%" if gain_gross_pct > 0 else "0.00%"
+        loss_real_str = f"-{loss_real_pct:.2f}%" if loss_real_pct > 0 else "0.00%"
 
-        line = f"{dia_str:<10} | {hora_str:<8} | {gain_str:<15} | {loss_str:<15} | {dur_str:<10}\n"
+        line = (
+            f"{dia_str:<10} | {hora_str:<8} | {estado_str:<10} | {dur_str:<10} | "
+            f"{max_gain_str:<10} | {max_loss_str:<10} | {gain_real_str:<11} | {gain_gross_str:<11} | {loss_real_str:<11}\n"
+        )
 
         try:
             with open(filename, "a", encoding="utf-8") as f:
@@ -784,22 +920,21 @@ class BinanceOpeningCandleBot:
         except Exception as e:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
-    def render_screen(self, strat_data, active_pos, entry, pnl_pct, dur_mins):
+    def render_screen(self, strat_data, pnl, dur_mins):
         """
-        DETALLES 3:
+        DETALLES 1 & 4:
+        - El formato del estado actual para estrategia:
+          en una linea: nombre de estrategia
+          en otra linea: precio
+          en otra linea: horario
+          en otra linea: posicion
         - Mantener cabecera siempre visible en pantalla.
         - Mantener visible en pantalla unicamente el estado actual.
         - No utilizar colores en todo el texto visualizado en pantalla.
-        - Reposicionar el cursor al inicio de la pantalla antes de actualizar en vez de borrar la pantalla por completo (\033[H).
+        - Reposicionar el cursor al inicio de la pantalla (\033[H) antes de actualizar.
         - Hacer operaciones con dinero real.
-
-        El formato del estado actual para estrategia:
-        en una linea: nombre de estrategia
-        en otra linea: precio
-        en otra linea: horario
-        en otra linea: posicion
         """
-        # Reposicionar el cursor al inicio de la pantalla (evita parpadeos y mantiene la visualización limpia)
+        # Reposicionar el cursor al inicio de la pantalla
         sys.stdout.write("\033[H")
 
         # Consultar balances para la cabecera
@@ -821,22 +956,33 @@ class BinanceOpeningCandleBot:
             wallet_bal, avail_bal, unrealized, has_keys = 0.0, 0.0, 0.0, False
 
         uptime_hours = (time.time() - self.bot_start_time) / 3600.0
-
-        # Formatear línea de posición
         curr_price = strat_data['current_price']
-        if active_pos and entry > 0:
-            dur_str = f" ({dur_mins:.1f} min)"
-            pnl_sign = "+" if pnl_pct >= 0 else ""
-            fee_impact_pct = 2.0 * self.fee_rate_pct * self.leverage
-            # Precios objetivo neto
-            if active_pos == 'LONG':
-                tp_price = entry * (1.0 + ((self.take_profit_pct + fee_impact_pct) / (self.leverage * 100.0)))
-                sl_price = entry * (1.0 - ((self.stop_loss_pct - fee_impact_pct) / (self.leverage * 100.0)))
-            else:
-                tp_price = entry * (1.0 - ((self.take_profit_pct + fee_impact_pct) / (self.leverage * 100.0)))
-                sl_price = entry * (1.0 + ((self.stop_loss_pct - fee_impact_pct) / (self.leverage * 100.0)))
 
-            pos_line = f"{active_pos} @ ${entry:.2f} | ROE: {pnl_sign}{pnl_pct:.2f}%{dur_str} | TP: ${tp_price:.2f} (+{self.take_profit_pct:.1f}%) | SL: ${sl_price:.2f} (-{self.stop_loss_pct:.1f}%)"
+        # Formatear línea de posicion
+        if self.entry_1:
+            side = self.entry_1['side']
+            dur_str = f" ({dur_mins:.1f} min)"
+            num_entries = 2 if self.entry_2 else 1
+            tot_qty = self.entry_1['qty'] + (self.entry_2['qty'] if self.entry_2 else 0.0)
+
+            if pnl:
+                roe_sign = "+" if pnl['net_roe_pct'] >= 0 else ""
+                pnl_str = f"ROE Neto: {roe_sign}{pnl['net_roe_pct']:.2f}% | Gan Real: +{pnl['gain_real_pct']:.2f}% | Gan Bruta: +{pnl['gain_gross_pct']:.2f}% | Perd Real: -{pnl['loss_real_pct']:.2f}%"
+            else:
+                pnl_str = ""
+
+            if num_entries == 1:
+                e1_price = self.entry_1['price']
+                tp_val = e1_price * (1.0 + (self.tp1_gain_real_pct / (self.leverage * 100.0))) if side == 'LONG' else e1_price * (1.0 - (self.tp1_gain_real_pct / (self.leverage * 100.0)))
+                sl_val = e1_price * (1.0 - (self.sl1_loss_real_pct / (self.leverage * 100.0))) if side == 'LONG' else e1_price * (1.0 + (self.sl1_loss_real_pct / (self.leverage * 100.0)))
+                target_str = f" | TP(1): ${tp_val:.2f} (+{self.tp1_gain_real_pct:.1f}% real) | SL(1): ${sl_val:.2f} (-{self.sl1_loss_real_pct:.1f}% real)"
+                pos_line = f"{side} (Entrada 1/2) @ ${e1_price:.2f} [{tot_qty} {self.symbol}]{dur_str} | {pnl_str}{target_str}"
+            else:
+                e1_p = self.entry_1['price']
+                e2_p = self.entry_2['price']
+                avg_p = (e1_p * self.entry_1['qty'] + e2_p * self.entry_2['qty']) / tot_qty
+                target_str = f" | TP(1&2): ${e1_p:.2f} (Valor Entrada 1) | SL(1&2): -{self.sl1_loss_real_pct:.1f}% real"
+                pos_line = f"{side} (Entrada 1+2 Simultaneas) Avg @ ${avg_p:.2f} [E1: ${e1_p:.2f}, E2: ${e2_p:.2f} | {tot_qty} {self.symbol}]{dur_str} | {pnl_str}{target_str}"
         else:
             pos_line = "SIN POSICION"
 
@@ -861,11 +1007,11 @@ class BinanceOpeningCandleBot:
         lines.append("======================================================================")
         lines.append("     BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VELA APERTURA     ")
         lines.append("======================================================================")
-        monto_str = f"{self.margin_usdt:.2f} USDT" if self.margin_usdt > 0 else f"{self.margin_pct:.0f}% USDT ({avail_bal:.2f} USDT disp.)"
-        lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {monto_str}")
+        lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Entradas: 45% + 45% (Max 2 simultaneas)")
         lines.append(f"Modo de Ejecucion: {'SIMULACION (DRY-RUN)' if self.dry_run else 'DINERO REAL (Binance Futures)'}")
-        lines.append("Apertura: New York 10:30 hs (Horario Buenos Aires)")
-        lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: {self.take_profit_pct:.1f}% neto | SL: {self.stop_loss_pct:.1f}%")
+        lines.append("Apertura: New York 10:30 hs (Horario Buenos Aires) - Solo dias habiles bursatiles")
+        lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP1: +{self.tp1_gain_real_pct:.1f}% real | SL1: -{self.sl1_loss_real_pct:.1f}% real")
+        lines.append(f"Regla E2: Si perdida real > {self.entry2_trigger_loss_real_pct:.1f}% -> Entrada 2 (45%) | TP1&2 = Valor Entrada 1 | SL2 = SL1")
         lines.append("----------------------------------------------------------------------")
         if has_keys:
             lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
@@ -893,7 +1039,7 @@ class BinanceOpeningCandleBot:
         sys.stdout.flush()
 
     def run(self):
-        """Bucle principal de ejecución del bot."""
+        """Bucle principal de monitoreo y ejecución del bot."""
         logging.info("Bucle principal de monitoreo Vela apertura iniciado.")
 
         # Limpiar la pantalla por única vez al arrancar
@@ -908,63 +1054,60 @@ class BinanceOpeningCandleBot:
                     time.sleep(self.poll_interval)
                     continue
 
-                # 1. Consultar si hay una posición activa actualmente
-                active_pos, entry, qty = self.get_active_position()
+                # 1. Comprobar posición externa en Binance si no estamos en dry_run
+                if not self.dry_run and self.client and self.api_key and self.api_secret:
+                    active_side, real_entry, real_qty = self.get_binance_open_position()
+                    if active_side is None and self.entry_1 is not None:
+                        # La posición se cerró externamente en Binance (por ej. liquidación o cierre manual)
+                        pnl = self.calculate_pnl(curr_price)
+                        exit_time = datetime.now()
+                        dur_mins = (exit_time - self.trade_start_time).total_seconds() / 60.0 if self.trade_start_time else 0.0
+                        net_usdt = pnl['net_pnl_usdt'] if pnl else 0.0
+                        gain_real = pnl['gain_real_pct'] if pnl else 0.0
+                        gain_gross = pnl['gain_gross_pct'] if pnl else 0.0
+                        loss_real = pnl['loss_real_pct'] if pnl else 0.0
+                        self._record_trade_in_2datos(exit_time, dur_mins, net_usdt, gain_real, gain_gross, loss_real)
+                        self._reset_position_state()
 
-                # Si no está en dry_run pero externamente se cerró la posición en Binance
-                if not self.dry_run and active_pos is None and self.current_position is not None:
-                    exit_time = datetime.now()
-                    dur_mins = (exit_time - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-                    pnl = (curr_price - self.entry_price) * self.position_qty if self.current_position == 'LONG' else (self.entry_price - curr_price) * self.position_qty
-                    self._record_and_save_trade(pnl, self.max_gain_pct, self.max_loss_pct, dur_mins, exit_time)
-                    self.current_position = None
-                    self.entry_price = 0.0
-                    self.position_qty = 0.0
-                    self.entry_time = None
-                    self.max_gain_pct = 0.0
-                    self.max_loss_pct = 0.0
-
-                pnl_pct = 0.0
+                # 2. Calcular PnL y actualizar métricas de ganancia/pérdida máxima
+                pnl = None
                 dur_mins = 0.0
-                if active_pos and entry > 0:
-                    dur_mins = (datetime.now() - self.entry_time).total_seconds() / 60.0 if self.entry_time else 0.0
-                    if active_pos == 'LONG':
-                        pnl_pct = ((curr_price - entry) / entry) * self.leverage * 100.0
-                    else:
-                        pnl_pct = ((entry - curr_price) / entry) * self.leverage * 100.0
+                if self.entry_1:
+                    dur_mins = (datetime.now() - self.trade_start_time).total_seconds() / 60.0 if self.trade_start_time else 0.0
+                    pnl = self.calculate_pnl(curr_price)
+                    if pnl:
+                        if pnl['gain_real_pct'] > self.max_gain_pct:
+                            self.max_gain_pct = pnl['gain_real_pct']
+                        if pnl['loss_real_pct'] > self.max_loss_pct:
+                            self.max_loss_pct = pnl['loss_real_pct']
 
-                    if pnl_pct > self.max_gain_pct:
-                        self.max_gain_pct = pnl_pct
-                    if pnl_pct < self.max_loss_pct:
-                        self.max_loss_pct = pnl_pct
-
-                # 2. Analizar vela de apertura de New York 10:30 hs (BA)
+                # 3. Analizar vela de apertura New York 10:30 hs (BA)
                 strat_data = self.analyze_strategy(curr_price, ba_now)
 
-                # 3. Renderizar pantalla monocroma con cabecera y estado actual
+                # 4. Renderizar pantalla monocroma con cabecera y estado actual
                 self.render_screen(
                     strat_data=strat_data,
-                    active_pos=active_pos,
-                    entry=entry,
-                    pnl_pct=pnl_pct,
+                    pnl=pnl,
                     dur_mins=dur_mins
                 )
 
-                # 4. Lógica de salidas:
-                # - TP: 2% de ganancia descontando comisiones
-                # - SL: 6% de perdida incluyendo comisiones
-                should_close, close_reason = self.check_exit_condition(curr_price)
-                if active_pos and should_close:
-                    self.close_position(curr_price, reason=close_reason)
-                    active_pos = None
+                # 5. Evaluar reglas de gestión y salida si hay posición activa
+                if self.entry_1:
+                    action, reason = self.check_position_rules(curr_price)
+                    if action == "CLOSE":
+                        self.close_all_positions(curr_price, reason=reason)
+                    elif action == "OPEN_ENTRY_2":
+                        # Ejecutar entrada(2): igual dirección, monto 45%
+                        logging.info(f"Disparando entrada(2): {reason}")
+                        success = self.execute_entry(entry_num=2, side=self.entry_1['side'], current_price=curr_price)
+                        if success:
+                            logging.info(f"Entrada(2) abierta exitosamente. TP actualizado a valor de Entrada(1): ${self.entry_1['price']:.2f}")
 
-                # 5. Lógica de entradas:
-                # - Hacer una sola entrada a la vez, no hacer varias entradas en simultáneo
-                # - Si se detectó señal en la vela de apertura de New York 10:30 hs
-                if active_pos is None and strat_data["signal"]:
+                # 6. Evaluar apertura de entrada(1) si no hay posición abierta y hay señal
+                elif strat_data["signal"]:
                     sig = strat_data["signal"]
-                    bolsa = strat_data["signal_bolsa"]
-                    self.open_position(side=sig, current_price=curr_price, bolsa=bolsa)
+                    logging.info(f"Señal de apertura detectada: {sig} en {strat_data['signal_bolsa']}. Ejecutando Entrada(1)...")
+                    self.execute_entry(entry_num=1, side=sig, current_price=curr_price)
 
                 time.sleep(self.poll_interval)
 
