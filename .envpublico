@@ -17,11 +17,11 @@ STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
 # 5) y 7) Reglas de Ganancia/Pérdida Real:
-# TP: 9% de ganancia real (ganancia sin comisiones)
-TAKE_PROFIT_PCT=9.0
+# TP: 10% de ganancia real (ganancia sin comisiones)
+TAKE_PROFIT_PCT=10.0
 
-# SL: 30% de perdida real (perdida con comisiones)
-STOP_LOSS_PCT=30.0
+# SL: 40% de perdida real (perdida con comisiones)
+STOP_LOSS_PCT=40.0
 
 # Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
 FEE_RATE_PCT=0.05

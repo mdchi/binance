@@ -21,8 +21,8 @@ Estrategia: Vela apertura
 6) entrada en long  = si la vela apertura analizada es una vela roja,  monto 90% de la cuenta futuros
    entrada en short = si la vela apertura analizada es una vela verde, monto 90% de la cuenta futuros
 
-7) TP = 9% de ganancia real
-   SL = 30% de perdida real
+7) TP = 10% de ganancia real
+   SL = 40% de perdida real
 
 Detalles:
 1) Cerrar posiciones abiertas al iniciar bot
@@ -135,8 +135,8 @@ class BinanceOpeningCandleBot:
         self.timeframe = os.getenv("TIMEFRAME", "1m")
 
         # 7) TP y SL
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "9.0"))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "30.0"))
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "10.0"))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "40.0"))
 
         # Estimación de comisión para comisiones de salida/entrada (0.05% taker Binance Futures)
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
@@ -734,8 +734,8 @@ class BinanceOpeningCandleBot:
         """
         5) ganancia real  = ganancia sin comisiones
            perdida real   = perdida con comisiones
-        7) TP = 9% de ganancia real
-           SL = 30% de perdida real
+        7) TP = 10% de ganancia real
+           SL = 40% de perdida real
         """
         if not self.current_position or self.entry_price <= 0:
             return False, None
@@ -756,11 +756,11 @@ class BinanceOpeningCandleBot:
         # Pérdida real: ROE con comisiones (%)
         net_pnl_pct = gross_pnl_pct - fee_pct
 
-        # 7) TP = 9% de ganancia real (ganancia sin comisiones)
+        # 7) TP = 10% de ganancia real (ganancia sin comisiones)
         if gross_pnl_pct >= self.take_profit_pct:
             return True, f"TP alcanzado (Ganancia real: +{gross_pnl_pct:.2f}% >= +{self.take_profit_pct:.2f}%)"
 
-        # 7) SL = 30% de perdida real (perdida con comisiones)
+        # 7) SL = 40% de perdida real (perdida con comisiones)
         if net_pnl_pct <= -abs(self.stop_loss_pct):
             perdida_real_pct = abs(net_pnl_pct)
             return True, f"SL alcanzado (Perdida real: -{perdida_real_pct:.2f}% <= -{abs(self.stop_loss_pct):.2f}%)"
@@ -1084,7 +1084,7 @@ class BinanceOpeningCandleBot:
                 )
 
                 # 4. Lógica de salidas:
-                # TP = 9% ganancia real (sin comisiones) | SL = 30% perdida real (con comisiones)
+                # TP = 10% ganancia real (sin comisiones) | SL = 40% perdida real (con comisiones)
                 should_close, close_reason = self.check_exit_condition(curr_price)
                 if active_pos and should_close:
                     self.close_position(curr_price, reason=close_reason)
