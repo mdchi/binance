@@ -1,33 +1,36 @@
+# ==============================================================================
 # Parámetros Generales del Bot de Trading Binance Futures (Público)
-SYMBOL=BTCUSDT
-# Monto por entrada: 45% del saldo USDT de la cuenta de futuros
-ENTRY1_PCT=45.0
-ENTRY2_PCT=45.0
-LEVERAGE=60
-MARGIN_TYPE=ISOLATED
+# ==============================================================================
 
-# Estrategia: Vela apertura
+# Símbolo a operar
+SYMBOL=BTCUSDT
+
+# 1) Modo Aislado y Apalancamiento 60x
+MARGIN_TYPE=ISOLATED
+LEVERAGE=60
+
+# Monto: 90% del saldo disponible en USDT de la cuenta de futuros
+MARGIN_PCT=90.0
+
+# 2) Estrategia: Vela apertura
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# Reglas de Salida Entrada 1
-# TP(1) = 9% de ganancia real (sin comisiones)
-TP1_GAIN_REAL_PCT=9.0
-# SL(1) = 30% de perdida real (con comisiones)
-SL1_LOSS_REAL_PCT=30.0
+# 5) y 7) Reglas de Ganancia/Pérdida Real:
+# TP: 9% de ganancia real (ganancia sin comisiones)
+TAKE_PROFIT_PCT=9.0
 
-# Reglas de Entrada 2
-# Si perdida real > 15% = hacer entrada(2) long/short igual direccion, monto 45%
-ENTRY2_TRIGGER_LOSS_REAL_PCT=15.0
+# SL: 30% de perdida real (perdida con comisiones)
+STOP_LOSS_PCT=30.0
 
 # Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
 FEE_RATE_PCT=0.05
 
-# Horarios de Apertura de Bolsa (Horario Buenos Aires UTC-3)
-# New York: 10:30 hs
-SESSIONS_CONFIG=NEW YORK:10:30
+# 4) Apertura Bolsa de New York: 10:30 hs (Horario Buenos Aires UTC-3)
+NYSE_OPEN_HOUR=10
+NYSE_OPEN_MINUTE=30
 
-# Modos de Ejecución (Operación con Dinero Real)
+# Modos de Ejecución (Operación con Dinero Real en Binance Futures)
 DRY_RUN=False
 USE_TESTNET=False
 
