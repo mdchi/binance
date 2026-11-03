@@ -66,14 +66,15 @@ class BinanceOpeningCandleBot:
     DATA_COL_NAMES = [
         "dia",
         "hora",
-        "duracion de la operacion",
+        "duracion operacion",
         "% ganancia maximo",
         "% perdida maximo",
         "ROI",
         "% ROI",
-        "comisiones"
+        "comisiones",
+        "% comisiones"
     ]
-    DATA_COL_WIDTHS = [10, 8, 24, 17, 16, 13, 11, 12]
+    DATA_COL_WIDTHS = [10, 8, 18, 17, 16, 13, 11, 12, 12]
 
     def __init__(self):
         # 5) Claves API desde .envprivado
@@ -744,6 +745,7 @@ class BinanceOpeningCandleBot:
         actual_margin = self.actual_margin_used if self.actual_margin_used > 0 else (entry_notional / self.leverage)
 
         roi_pct = (gross_pnl_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
+        fees_pct = (total_fees_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
 
         if self.dry_run:
             self.simulated_balance += (gross_pnl_usdt - total_fees)
@@ -753,6 +755,7 @@ class BinanceOpeningCandleBot:
             roi_usdt=gross_pnl_usdt,
             roi_pct=roi_pct,
             total_fees_usdt=total_fees,
+            fees_pct=fees_pct,
             max_gain_pct=self.max_gain_pct,
             max_loss_pct=self.max_loss_pct,
             dur_secs=dur_secs,
@@ -767,14 +770,13 @@ class BinanceOpeningCandleBot:
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
 
-    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, max_gain_pct, max_loss_pct, dur_secs, exit_time):
+    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time):
         """
         DETALLES 4: Graba en 2datos.txt con columnas alineadas:
-        dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones
+        dia, hora, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones
         """
         # Determinación de ganada/perdida según ROI
         is_win = (roi_pct >= self.take_profit_pct) or (roi_usdt >= 0)
-        outcome = "GANADA" if is_win else "PERDIDA"
 
         if is_win:
             self.winning_trades += 1
@@ -788,6 +790,7 @@ class BinanceOpeningCandleBot:
             roi_pct_str = f"{roi_pct:.2f}%"
 
         comisiones_str = f"{total_fees_usdt:.2f} USDT"
+        pct_comisiones_str = f"{fees_pct:.2f}%"
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
@@ -807,7 +810,8 @@ class BinanceOpeningCandleBot:
             loss_max_str,
             roi_str,
             roi_pct_str,
-            comisiones_str
+            comisiones_str,
+            pct_comisiones_str
         ]
 
         line = " | ".join(val.ljust(w) for val, w in zip(row, self.DATA_COL_WIDTHS)) + "\n"
