@@ -5,9 +5,9 @@
 # Símbolo a operar
 SYMBOL=BTCUSDT
 
-# 1) Modo Aislado y Apalancamiento 60x
+# 1) Modo Aislado y Apalancamiento 30x
 MARGIN_TYPE=ISOLATED
-LEVERAGE=60
+LEVERAGE=30
 
 # Monto: 90% del saldo disponible en USDT de la cuenta de futuros
 MARGIN_PCT=90.0
@@ -16,12 +16,12 @@ MARGIN_PCT=90.0
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# 6) Reglas de Ganancia Neta / Pérdida Bruta:
-# TP: 10% de ganancia neta (ganancia sin comisiones)
-TAKE_PROFIT_PCT=10.0
+# 6) Reglas de Take Profit y Stop Loss por ROI:
+# TP: ROI 5%
+TAKE_PROFIT_PCT=5.0
 
-# SL: 40% de perdida bruta (perdida con comisiones)
-STOP_LOSS_PCT=40.0
+# SL: ROI -20%
+STOP_LOSS_PCT=20.0
 
 # Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
 FEE_RATE_PCT=0.05

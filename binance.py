@@ -6,7 +6,7 @@ Bot de trading automático en Binance.com
 Estrategia: Vela apertura
 
 1) Modo Aislado
-   Apalancamiento 60x 
+   Apalancamiento 30x 
    Monto usdt de la cuenta futuros
 
 2) analizar la vela apertura en temporalidad 1 min
@@ -18,10 +18,8 @@ Estrategia: Vela apertura
 5) entrada en long  = si la vela apertura analizada es una vela roja,  monto 90% de la cuenta futuros
    entrada en short = si la vela apertura analizada es una vela verde, monto 90% de la cuenta futuros
 
-6) ganancia neta = ganancia sin comisiones
-   perdida bruta = perdida con comisiones
-   TP = 10% de ganancia neta
-   SL = 40% de perdida bruta
+6) TP = ROI 5%
+   SL = ROI -20%
 
 Detalles:
 1) Cerrar posiciones abiertas al iniciar bot
@@ -36,7 +34,7 @@ Detalles:
    No utilizar colores en todo el texto visualizado en pantalla
    Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualizacion de datos en vez de borrar la pantalla por completo
 4) hacer archivo 2datos.txt donde van las operaciones que se ganaron y las operaciones que se perdieron, con columnas alineadas, con los datos:
-   dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, % ganancia neta, % perdida bruta, ganancia neta, perdida bruta, comisiones
+   dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones
 5) .envprivado con la configuracion de api de binance 
    .envpublico con el resto de parametros
 """
@@ -111,13 +109,11 @@ class BinanceOpeningCandleBot:
         "duracion de la operacion",
         "% ganancia maximo",
         "% perdida maximo",
-        "% ganancia neta",
-        "% perdida bruta",
-        "ganancia neta",
-        "perdida bruta",
+        "ROI",
+        "% ROI",
         "comisiones"
     ]
-    DATA_COL_WIDTHS = [10, 8, 14, 24, 17, 16, 15, 15, 13, 13, 12]
+    DATA_COL_WIDTHS = [10, 8, 14, 24, 17, 16, 13, 11, 12]
 
     def __init__(self):
         # 5) Claves API desde .envprivado
@@ -127,16 +123,16 @@ class BinanceOpeningCandleBot:
         # 5) Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
-        self.leverage = int(os.getenv("LEVERAGE", "60"))
+        self.leverage = int(os.getenv("LEVERAGE", "30"))
         self.margin_pct = float(os.getenv("MARGIN_PCT", "90.0"))
         self.margin_usdt_fixed = float(os.getenv("MARGIN_USDT", "0.0"))
 
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
         self.timeframe = os.getenv("TIMEFRAME", "1m")
 
-        # 7) TP y SL
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "10.0"))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "40.0"))
+        # 6) TP y SL por ROI
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "5.0"))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "20.0"))
 
         # Estimación de comisión para comisiones de salida/entrada (0.05% taker Binance Futures)
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
@@ -208,19 +204,19 @@ class BinanceOpeningCandleBot:
             with open(filename, "r", encoding="utf-8") as f:
                 for line in f:
                     parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 10:
+                    if len(parts) >= 9:
                         resultado = parts[2].upper()
                         if resultado == "GANADA":
                             self.winning_trades += 1
                             try:
-                                val_str = parts[8].replace("USDT", "").replace("+", "").strip()
+                                val_str = parts[6].replace("USDT", "").replace("+", "").strip()
                                 self.money_won += float(val_str)
                             except Exception:
                                 pass
                         elif resultado == "PERDIDA":
                             self.losing_trades += 1
                             try:
-                                val_str = parts[9].replace("USDT", "").replace("-", "").strip()
+                                val_str = parts[6].replace("USDT", "").replace("-", "").strip()
                                 self.money_lost += float(val_str)
                             except Exception:
                                 pass
@@ -297,7 +293,7 @@ class BinanceOpeningCandleBot:
         return max(formatted_qty, self.min_qty)
 
     def _setup_futures_account(self):
-        """Configura margen AISLADO (ISOLATED) y apalancamiento 60x en Binance Futures."""
+        """Configura margen AISLADO (ISOLATED) y apalancamiento 30x en Binance Futures."""
         try:
             # 1) Modo Aislado
             try:
@@ -307,7 +303,7 @@ class BinanceOpeningCandleBot:
                 if e.code != -4046 and "No need to change" not in str(e):
                     logging.warning(f"Nota configuración margen aislado: {e.message}")
 
-            # 1) Apalancamiento 60x
+            # 1) Apalancamiento 30x
             self.client.futures_change_leverage(symbol=self.symbol, leverage=self.leverage)
             logging.info(f"Apalancamiento configurado a {self.leverage}x para {self.symbol}.")
         except Exception as e:
@@ -665,8 +661,8 @@ class BinanceOpeningCandleBot:
 
     def open_position(self, side, current_price):
         """
-        1) Modo Aislado, Apalancamiento 60x.
-        6) Monto 90% de la cuenta de futuros.
+        1) Modo Aislado, Apalancamiento 30x.
+        5) Monto 90% de la cuenta de futuros.
         3) Máximo 1 entrada a la vez.
         """
         margin_to_use = self.get_target_margin_usdt()
@@ -732,38 +728,25 @@ class BinanceOpeningCandleBot:
 
     def check_exit_condition(self, current_price):
         """
-        6) ganancia neta = ganancia sin comisiones
-           perdida bruta = perdida con comisiones
-           TP = 10% de ganancia neta
-           SL = 40% de perdida bruta
+        6) TP = ROI 5%
+           SL = ROI -20%
         """
         if not self.current_position or self.entry_price <= 0:
             return False, None
 
-        # Ganancia neta: ROE sin comisiones (%)
+        # ROI (%) sobre el margen de la posición
         if self.current_position == 'LONG':
-            gross_pnl_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
+            roi_pct = ((current_price - self.entry_price) / self.entry_price) * self.leverage * 100.0
         else:
-            gross_pnl_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
+            roi_pct = ((self.entry_price - current_price) / self.entry_price) * self.leverage * 100.0
 
-        # Comisión estimada total (apertura + cierre a precio actual) sobre margen (%)
-        entry_notional = self.entry_price * self.position_qty
-        exit_notional = current_price * self.position_qty
-        total_fee_usdt = (entry_notional + exit_notional) * (self.fee_rate_pct / 100.0)
-        actual_margin = self.actual_margin_used if self.actual_margin_used > 0 else (entry_notional / self.leverage)
-        fee_pct = (total_fee_usdt / actual_margin) * 100.0 if actual_margin > 0 else (2.0 * self.fee_rate_pct * self.leverage)
+        # 6) TP = ROI 5%
+        if roi_pct >= self.take_profit_pct:
+            return True, f"TP alcanzado (ROI: +{roi_pct:.2f}% >= +{self.take_profit_pct:.2f}%)"
 
-        # Pérdida bruta: ROE con comisiones (%)
-        net_pnl_pct = gross_pnl_pct - fee_pct
-
-        # 6) TP = 10% de ganancia neta (ganancia sin comisiones)
-        if gross_pnl_pct >= self.take_profit_pct:
-            return True, f"TP alcanzado (Ganancia neta: +{gross_pnl_pct:.2f}% >= +{self.take_profit_pct:.2f}%)"
-
-        # 6) SL = 40% de perdida bruta (perdida con comisiones)
-        if net_pnl_pct <= -abs(self.stop_loss_pct):
-            perdida_bruta_pct = abs(net_pnl_pct)
-            return True, f"SL alcanzado (Perdida bruta: -{perdida_bruta_pct:.2f}% <= -{abs(self.stop_loss_pct):.2f}%)"
+        # 6) SL = ROI -20%
+        if roi_pct <= -abs(self.stop_loss_pct):
+            return True, f"SL alcanzado (ROI: {roi_pct:.2f}% <= -{abs(self.stop_loss_pct):.2f}%)"
 
         return False, None
 
@@ -794,7 +777,6 @@ class BinanceOpeningCandleBot:
                 logging.error(f"Error ejecutando orden de cierre en Binance: {e}")
 
         # Cálculos de resultados:
-        # Ganancia neta = ganancia sin comisiones
         if side == 'LONG':
             gross_pnl_usdt = (current_price - self.entry_price) * self.position_qty
         else:
@@ -805,22 +787,15 @@ class BinanceOpeningCandleBot:
         total_fees = (entry_notional + exit_notional) * (self.fee_rate_pct / 100.0)
         actual_margin = self.actual_margin_used if self.actual_margin_used > 0 else (entry_notional / self.leverage)
 
-        gross_pnl_pct = (gross_pnl_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
-        fee_pct = (total_fees / actual_margin) * 100.0 if actual_margin > 0 else 0.0
-
-        # Perdida bruta = perdida con comisiones
-        net_pnl_usdt = gross_pnl_usdt - total_fees
-        net_pnl_pct = gross_pnl_pct - fee_pct
+        roi_pct = (gross_pnl_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
 
         if self.dry_run:
-            self.simulated_balance += net_pnl_usdt
+            self.simulated_balance += (gross_pnl_usdt - total_fees)
 
         # Registrar en 2datos.txt
         self._record_trade_data(
-            gross_pnl_usdt=gross_pnl_usdt,
-            gross_pnl_pct=gross_pnl_pct,
-            net_pnl_usdt=net_pnl_usdt,
-            net_pnl_pct=net_pnl_pct,
+            roi_usdt=gross_pnl_usdt,
+            roi_pct=roi_pct,
             total_fees_usdt=total_fees,
             max_gain_pct=self.max_gain_pct,
             max_loss_pct=self.max_loss_pct,
@@ -836,29 +811,25 @@ class BinanceOpeningCandleBot:
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
 
-    def _record_trade_data(self, gross_pnl_usdt, gross_pnl_pct, net_pnl_usdt, net_pnl_pct, total_fees_usdt, max_gain_pct, max_loss_pct, dur_secs, exit_time):
+    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, max_gain_pct, max_loss_pct, dur_secs, exit_time):
         """
         DETALLES 4: Graba en 2datos.txt con columnas alineadas:
-        dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, % ganancia neta, % perdida bruta, ganancia neta, perdida bruta, comisiones
+        dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones
         """
-        # Determinación de ganada/perdida
-        is_win = (gross_pnl_pct >= self.take_profit_pct) or (net_pnl_usdt >= 0)
+        # Determinación de ganada/perdida según ROI
+        is_win = (roi_pct >= self.take_profit_pct) or (roi_usdt >= 0)
         outcome = "GANADA" if is_win else "PERDIDA"
 
         if is_win:
             self.winning_trades += 1
-            self.money_won += gross_pnl_usdt
-            gain_net_pct_str = f"+{gross_pnl_pct:.2f}%"
-            loss_gross_pct_str = "0.00%"
-            gain_net_str = f"+{gross_pnl_usdt:.2f} USDT"
-            loss_gross_str = "0.00 USDT"
+            self.money_won += roi_usdt
+            roi_str = f"+{roi_usdt:.2f} USDT"
+            roi_pct_str = f"+{roi_pct:.2f}%"
         else:
             self.losing_trades += 1
-            self.money_lost += abs(net_pnl_usdt)
-            gain_net_pct_str = "0.00%"
-            loss_gross_pct_str = f"-{abs(net_pnl_pct):.2f}%"
-            gain_net_str = "0.00 USDT"
-            loss_gross_str = f"-{abs(net_pnl_usdt):.2f} USDT"
+            self.money_lost += abs(roi_usdt)
+            roi_str = f"{roi_usdt:.2f} USDT"
+            roi_pct_str = f"{roi_pct:.2f}%"
 
         comisiones_str = f"{total_fees_usdt:.2f} USDT"
 
@@ -879,10 +850,8 @@ class BinanceOpeningCandleBot:
             dur_str,
             gain_max_str,
             loss_max_str,
-            gain_net_pct_str,
-            loss_gross_pct_str,
-            gain_net_str,
-            loss_gross_str,
+            roi_str,
+            roi_pct_str,
             comisiones_str
         ]
 
@@ -896,7 +865,7 @@ class BinanceOpeningCandleBot:
         except Exception as e:
             logging.error(f"Error escribiendo en {filename}: {e}")
 
-    def render_screen(self, strat_data, active_pos, entry, gross_pnl_pct, net_pnl_pct, dur_secs):
+    def render_screen(self, strat_data, active_pos, entry, roi_pct, dur_secs):
         """
         DETALLES 2 y 3:
         - Mantener cabecera siempre visible en pantalla.
@@ -939,19 +908,18 @@ class BinanceOpeningCandleBot:
             secs = int(dur_secs % 60)
             dur_str = f"{mins:02d}m {secs:02d}s"
 
-            fee_impact_pct = 2.0 * self.fee_rate_pct * self.leverage
-            # Niveles de precio objetivo
+            # Niveles de precio objetivo por ROI
             if active_pos == 'LONG':
                 tp_price = entry * (1.0 + (self.take_profit_pct / (self.leverage * 100.0)))
-                sl_price = entry * (1.0 - ((self.stop_loss_pct - fee_impact_pct) / (self.leverage * 100.0)))
+                sl_price = entry * (1.0 - (self.stop_loss_pct / (self.leverage * 100.0)))
             else:
                 tp_price = entry * (1.0 - (self.take_profit_pct / (self.leverage * 100.0)))
-                sl_price = entry * (1.0 + ((self.stop_loss_pct - fee_impact_pct) / (self.leverage * 100.0)))
+                sl_price = entry * (1.0 + (self.stop_loss_pct / (self.leverage * 100.0)))
 
-            pnl_sign = "+" if gross_pnl_pct >= 0 else ""
+            pnl_sign = "+" if roi_pct >= 0 else ""
             pos_line = (
                 f"{active_pos} | Cantidad: {self.position_qty} {self.symbol} | Entrada: ${entry:.2f} | "
-                f"ROE Ganancia Neta: {pnl_sign}{gross_pnl_pct:.2f}% | "
+                f"ROI: {pnl_sign}{roi_pct:.2f}% | "
                 f"TP: ${tp_price:.2f} (+{self.take_profit_pct:.1f}%) | "
                 f"SL: ${sl_price:.2f} (-{self.stop_loss_pct:.1f}%) | "
                 f"Duracion: {dur_str}"
@@ -988,7 +956,7 @@ class BinanceOpeningCandleBot:
         else:
             lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT (Modo simulado)")
         lines.append(f"Apertura NYSE: {self.nyse_open_hour:02d}:{self.nyse_open_minute:02d} hs (Buenos Aires) - Solo dias habiles NYSE")
-        lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: {self.take_profit_pct:.1f}% neta | SL: {self.stop_loss_pct:.1f}% bruta")
+        lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: ROI {self.take_profit_pct:.1f}% | SL: ROI -{self.stop_loss_pct:.1f}%")
         lines.append("----------------------------------------------------------------------------------------")
         lines.append(f"Tiempo activo: {uptime_hours:.2f}h | Operaciones Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
         lines.append("========================================================================================")
@@ -1034,15 +1002,11 @@ class BinanceOpeningCandleBot:
                     exit_notional = curr_price * self.position_qty
                     total_fees = (entry_notional + exit_notional) * (self.fee_rate_pct / 100.0)
                     actual_margin = self.actual_margin_used if self.actual_margin_used > 0 else (entry_notional / self.leverage)
-                    gross_pct = (gross_pnl / actual_margin) * 100.0 if actual_margin > 0 else 0.0
-                    net_pnl = gross_pnl - total_fees
-                    net_pct = (net_pnl / actual_margin) * 100.0 if actual_margin > 0 else 0.0
+                    roi_pct = (gross_pnl / actual_margin) * 100.0 if actual_margin > 0 else 0.0
 
                     self._record_trade_data(
-                        gross_pnl_usdt=gross_pnl,
-                        gross_pnl_pct=gross_pct,
-                        net_pnl_usdt=net_pnl,
-                        net_pnl_pct=net_pct,
+                        roi_usdt=gross_pnl,
+                        roi_pct=roi_pct,
                         total_fees_usdt=total_fees,
                         max_gain_pct=self.max_gain_pct,
                         max_loss_pct=self.max_loss_pct,
@@ -1056,24 +1020,20 @@ class BinanceOpeningCandleBot:
                     self.max_gain_pct = 0.0
                     self.max_loss_pct = 0.0
 
-                gross_pnl_pct = 0.0
-                net_pnl_pct = 0.0
+                roi_pct = 0.0
                 dur_secs = 0.0
                 if active_pos and entry > 0:
                     dur_secs = (datetime.now() - self.entry_time).total_seconds() if self.entry_time else 0.0
                     if active_pos == 'LONG':
-                        gross_pnl_pct = ((curr_price - entry) / entry) * self.leverage * 100.0
+                        roi_pct = ((curr_price - entry) / entry) * self.leverage * 100.0
                     else:
-                        gross_pnl_pct = ((entry - curr_price) / entry) * self.leverage * 100.0
-
-                    fee_pct = 2.0 * self.fee_rate_pct * self.leverage
-                    net_pnl_pct = gross_pnl_pct - fee_pct
+                        roi_pct = ((entry - curr_price) / entry) * self.leverage * 100.0
 
                     # Actualizar métricas máximas de la operación
-                    if gross_pnl_pct > self.max_gain_pct:
-                        self.max_gain_pct = gross_pnl_pct
-                    if net_pnl_pct < self.max_loss_pct:
-                        self.max_loss_pct = net_pnl_pct
+                    if roi_pct > self.max_gain_pct:
+                        self.max_gain_pct = roi_pct
+                    if roi_pct < self.max_loss_pct:
+                        self.max_loss_pct = roi_pct
 
                 # 2. Analizar vela de apertura NYSE 10:30 hs (BA)
                 strat_data = self.analyze_strategy(curr_price, ba_now)
@@ -1083,13 +1043,12 @@ class BinanceOpeningCandleBot:
                     strat_data=strat_data,
                     active_pos=active_pos,
                     entry=entry,
-                    gross_pnl_pct=gross_pnl_pct,
-                    net_pnl_pct=net_pnl_pct,
+                    roi_pct=roi_pct,
                     dur_secs=dur_secs
                 )
 
                 # 4. Lógica de salidas:
-                # TP = 10% ganancia neta (sin comisiones) | SL = 40% perdida bruta (con comisiones)
+                # TP = ROI 5% | SL = ROI -20%
                 should_close, close_reason = self.check_exit_condition(curr_price)
                 if active_pos and should_close:
                     self.close_position(curr_price, reason=close_reason)
