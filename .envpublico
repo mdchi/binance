@@ -16,11 +16,11 @@ MARGIN_PCT=90.0
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
 
-# 5) y 7) Reglas de Ganancia/Pérdida Real:
-# TP: 10% de ganancia real (ganancia sin comisiones)
+# 6) Reglas de Ganancia Neta / Pérdida Bruta:
+# TP: 10% de ganancia neta (ganancia sin comisiones)
 TAKE_PROFIT_PCT=10.0
 
-# SL: 40% de perdida real (perdida con comisiones)
+# SL: 40% de perdida bruta (perdida con comisiones)
 STOP_LOSS_PCT=40.0
 
 # Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
