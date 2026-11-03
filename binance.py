@@ -1,44 +1,5 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Bot de trading automático en Binance.com
-
-Estrategia: Vela apertura
-
-1) Modo Aislado
-   Apalancamiento 30x 
-   Monto usdt de la cuenta futuros
-
-2) analizar la vela apertura en temporalidad 1 min
-
-3) hacer maximo 1 entradas a la vez, o sea en simultaneo
-
-4) analizar vela apertura de bolsa de new york 10:30 hs (horario buenos aires por la mañana) unicamente los dias que esta abierta la bolsa de new york
-
-5) entrada en long  = si la vela apertura analizada es una vela roja,  monto 90% de la cuenta futuros
-   entrada en short = si la vela apertura analizada es una vela verde, monto 90% de la cuenta futuros
-
-6) TP = ROI 5%
-   SL = ROI -20%
-
-Detalles:
-1) Cerrar posiciones abiertas al iniciar bot
-   Hacer operaciones con dinero real
-2) El formato del estado actual para estrategia:
-   en una linea: nombre de estrategia
-   en otra linea: precio
-   en otra linea: horario
-   en otra linea: posicion
-3) Mantener cabecera siempre visible en pantalla
-   Mantener visible en pantalla unicamente el estado actual
-   No utilizar colores en todo el texto visualizado en pantalla
-   Reposicionar el cursor al inicio de la pantalla antes de actualizar la visualizacion de datos en vez de borrar la pantalla por completo
-4) hacer archivo 2datos.txt donde van las operaciones que se ganaron y las operaciones que se perdieron, con columnas alineadas, con los datos:
-   dia, hora, ganada/perdida, duracion de la operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones
-5) .envprivado con la configuracion de api de binance 
-   .envpublico con el resto de parametros
-"""
-
 import os
 import sys
 import time
@@ -105,7 +66,6 @@ class BinanceOpeningCandleBot:
     DATA_COL_NAMES = [
         "dia",
         "hora",
-        "ganada/perdida",
         "duracion de la operacion",
         "% ganancia maximo",
         "% perdida maximo",
@@ -113,7 +73,7 @@ class BinanceOpeningCandleBot:
         "% ROI",
         "comisiones"
     ]
-    DATA_COL_WIDTHS = [10, 8, 14, 24, 17, 16, 13, 11, 12]
+    DATA_COL_WIDTHS = [10, 8, 24, 17, 16, 13, 11, 12]
 
     def __init__(self):
         # 5) Claves API desde .envprivado
@@ -123,7 +83,7 @@ class BinanceOpeningCandleBot:
         # 5) Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
-        self.leverage = int(os.getenv("LEVERAGE", "30"))
+        self.leverage = int(os.getenv("LEVERAGE", "60"))
         self.margin_pct = float(os.getenv("MARGIN_PCT", "90.0"))
         self.margin_usdt_fixed = float(os.getenv("MARGIN_USDT", "0.0"))
 
@@ -131,8 +91,8 @@ class BinanceOpeningCandleBot:
         self.timeframe = os.getenv("TIMEFRAME", "1m")
 
         # 6) TP y SL por ROI
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", "5.0"))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", "20.0"))
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_ROI", "16.0")))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", os.getenv("SL_ROI", "40.0")))
 
         # Estimación de comisión para comisiones de salida/entrada (0.05% taker Binance Futures)
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
@@ -204,22 +164,18 @@ class BinanceOpeningCandleBot:
             with open(filename, "r", encoding="utf-8") as f:
                 for line in f:
                     parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 9:
-                        resultado = parts[2].upper()
-                        if resultado == "GANADA":
-                            self.winning_trades += 1
-                            try:
-                                val_str = parts[6].replace("USDT", "").replace("+", "").strip()
-                                self.money_won += float(val_str)
-                            except Exception:
-                                pass
-                        elif resultado == "PERDIDA":
-                            self.losing_trades += 1
-                            try:
-                                val_str = parts[6].replace("USDT", "").replace("-", "").strip()
-                                self.money_lost += float(val_str)
-                            except Exception:
-                                pass
+                    if len(parts) >= 8:
+                        try:
+                            val_str = parts[5].replace("USDT", "").replace("+", "").strip()
+                            roi_val = float(val_str)
+                            if roi_val >= 0:
+                                self.winning_trades += 1
+                                self.money_won += roi_val
+                            else:
+                                self.losing_trades += 1
+                                self.money_lost += abs(roi_val)
+                        except Exception:
+                            pass
         except Exception as e:
             logging.warning(f"Nota al leer métricas históricas: {e}")
 
@@ -846,7 +802,6 @@ class BinanceOpeningCandleBot:
         row = [
             dia_str,
             hora_str,
-            outcome,
             dur_str,
             gain_max_str,
             loss_max_str,

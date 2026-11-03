@@ -1,38 +1,16 @@
-# ==============================================================================
-# Parámetros Generales del Bot de Trading Binance Futures (Público)
-# ==============================================================================
-
-# Símbolo a operar
 SYMBOL=BTCUSDT
-
-# 1) Modo Aislado y Apalancamiento 30x
+LEVERAGE=60
 MARGIN_TYPE=ISOLATED
-LEVERAGE=30
-
-# Monto: 90% del saldo disponible en USDT de la cuenta de futuros
 MARGIN_PCT=90.0
-
-# 2) Estrategia: Vela apertura
 STRATEGY_NAME=Vela apertura
 TIMEFRAME=1m
-
-# 6) Reglas de Take Profit y Stop Loss por ROI:
-# TP: ROI 5%
-TAKE_PROFIT_PCT=5.0
-
-# SL: ROI -20%
-STOP_LOSS_PCT=20.0
-
-# Tasa de comisión estimada por orden (ej. 0.05% para market taker Binance Futures)
+TAKE_PROFIT_PCT=16.0
+STOP_LOSS_PCT=40.0
+TP_ROI=16.0
+SL_ROI=40.0
 FEE_RATE_PCT=0.05
-
-# 4) Apertura Bolsa de New York: 10:30 hs (Horario Buenos Aires UTC-3)
 NYSE_OPEN_HOUR=10
 NYSE_OPEN_MINUTE=30
-
-# Modos de Ejecución (Operación con Dinero Real en Binance Futures)
 DRY_RUN=False
 USE_TESTNET=False
-
-# Intervalo de actualización en segundos para monitoreo continuo
-POLL_INTERVAL_SEC=1
+POLL_INTERVAL_SEC=1.0
