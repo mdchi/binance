@@ -84,7 +84,7 @@ class BinanceOpeningCandleBot:
         # 5) Parámetros desde .envpublico
         self.symbol = os.getenv("SYMBOL", "BTCUSDT").upper()
         self.margin_type = os.getenv("MARGIN_TYPE", "ISOLATED").upper()
-        self.leverage = int(os.getenv("LEVERAGE", "60"))
+        self.leverage = int(os.getenv("LEVERAGE", "30"))
         self.margin_pct = float(os.getenv("MARGIN_PCT", "90.0"))
         self.margin_usdt_fixed = float(os.getenv("MARGIN_USDT", "0.0"))
 
@@ -92,8 +92,8 @@ class BinanceOpeningCandleBot:
         self.timeframe = os.getenv("TIMEFRAME", "1m")
 
         # 6) TP y SL por ROI
-        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_ROI", "16.0")))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", os.getenv("SL_ROI", "40.0")))
+        self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_ROI", "8.0")))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", os.getenv("SL_ROI", "20.0")))
 
         # Estimación de comisión para comisiones de salida/entrada (0.05% taker Binance Futures)
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
