@@ -745,7 +745,7 @@ class BinanceOpeningCandleBot:
         actual_margin = self.actual_margin_used if self.actual_margin_used > 0 else (entry_notional / self.leverage)
 
         roi_pct = (gross_pnl_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
-        fees_pct = (total_fees_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
+        fees_pct = (total_fees / actual_margin) * 100.0 if actual_margin > 0 else 0.0
 
         if self.dry_run:
             self.simulated_balance += (gross_pnl_usdt - total_fees)
@@ -962,11 +962,13 @@ class BinanceOpeningCandleBot:
                     total_fees = (entry_notional + exit_notional) * (self.fee_rate_pct / 100.0)
                     actual_margin = self.actual_margin_used if self.actual_margin_used > 0 else (entry_notional / self.leverage)
                     roi_pct = (gross_pnl / actual_margin) * 100.0 if actual_margin > 0 else 0.0
+                    fees_pct = (total_fees / actual_margin) * 100.0 if actual_margin > 0 else 0.0
 
                     self._record_trade_data(
                         roi_usdt=gross_pnl,
                         roi_pct=roi_pct,
                         total_fees_usdt=total_fees,
+                        fees_pct=fees_pct,
                         max_gain_pct=self.max_gain_pct,
                         max_loss_pct=self.max_loss_pct,
                         dur_secs=dur_secs,
