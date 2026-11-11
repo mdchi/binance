@@ -14,8 +14,9 @@ except ImportError:
 
 from dotenv import load_dotenv
 
-# Zona horaria de Buenos Aires (UTC-3)
+# Zonas horarias
 TZ_BA = ZoneInfo("America/Argentina/Buenos_Aires")
+TZ_NY = ZoneInfo("America/New_York")
 
 # 1. Habilitar soporte VT/ANSI en consola Windows
 if os.name == 'nt':
@@ -98,8 +99,8 @@ class BinanceOpeningCandleBot:
         # Estimación de comisión para comisiones de salida/entrada (0.05% taker Binance Futures)
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
 
-        # 4) Horario de apertura de la Bolsa de New York (10:30 hs horario Buenos Aires)
-        self.nyse_open_hour = int(os.getenv("NYSE_OPEN_HOUR", "10"))
+        # 4) Horario de apertura de la Bolsa de New York (09:30 hs horario New York)
+        self.nyse_open_hour = int(os.getenv("NYSE_OPEN_HOUR", "9"))
         self.nyse_open_minute = int(os.getenv("NYSE_OPEN_MINUTE", "30"))
 
         # Modos de ejecución
@@ -181,8 +182,8 @@ class BinanceOpeningCandleBot:
             logging.warning(f"Nota al leer métricas históricas: {e}")
 
     def _initialize_client(self):
-        """Inicializa cliente Binance, configura modo AISLADO 60x y cierra posiciones previas."""
-        logging.info("Iniciando Bot Binance Vela apertura (NYSE 10:30 hs)...")
+        """Inicializa cliente Binance, configura modo AISLADO 30x y cierra posiciones previas."""
+        logging.info("Iniciando Bot Binance Vela apertura (NYSE 09:30 hs New York)...")
         logging.info(f"Símbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_pct}% de la cuenta USDT")
 
         try:
@@ -411,14 +412,14 @@ class BinanceOpeningCandleBot:
             logging.error(f"Error al consultar precio de {self.symbol}: {e}")
             return 0.0
 
-    def fetch_opening_candle(self, target_dt_ba):
+    def fetch_opening_candle(self, target_dt_ny):
         """
-        Obtiene la vela de 1 minuto correspondiente a las 10:30 hs (horario Buenos Aires).
-        target_dt_ba: datetime con TZ_BA del minuto exacto de apertura (10:30:00).
+        Obtiene la vela de 1 minuto correspondiente a las 09:30 hs (horario New York).
+        target_dt_ny: datetime con TZ_NY del minuto exacto de apertura (09:30:00).
         Retorna: dict con {open, high, low, close, is_closed} o None.
         """
         try:
-            start_ts = int(target_dt_ba.timestamp() * 1000)
+            start_ts = int(target_dt_ny.timestamp() * 1000)
             end_ts = start_ts + 60000
 
             klines = self.client.futures_klines(
@@ -544,27 +545,28 @@ class BinanceOpeningCandleBot:
 
     def analyze_strategy(self, current_price, ba_now):
         """
-        4) Analizar vela apertura de bolsa de New York 10:30 hs (horario Buenos Aires)
+        4) Analizar vela apertura de bolsa de New York 09:30 hs (horario New York)
            únicamente los días que está abierta la bolsa de New York.
         2) Temporalidad 1 min.
         6) Entrada en long: si la vela apertura es roja.
            Entrada en short: si la vela apertura es verde.
         """
-        today_date = ba_now.date()
+        ny_now = datetime.now(TZ_NY)
+        today_date_ny = ny_now.date()
         target_time = dt_time(self.nyse_open_hour, self.nyse_open_minute, 0)
-        target_dt = datetime.combine(today_date, target_time, tzinfo=TZ_BA)
-        session_key = f"{today_date.strftime('%Y%m%d')}_NYSE"
+        target_dt_ny = datetime.combine(today_date_ny, target_time, tzinfo=TZ_NY)
+        session_key = f"{today_date_ny.strftime('%Y%m%d')}_NYSE"
 
         # Buscar próxima sesión NYSE
-        candidate_date = today_date
-        candidate_dt = target_dt
-        if ba_now >= candidate_dt or not self.is_nyse_open_day(candidate_date):
+        candidate_date = today_date_ny
+        candidate_dt = target_dt_ny
+        if ny_now >= candidate_dt or not self.is_nyse_open_day(candidate_date):
             candidate_date += timedelta(days=1)
             while not self.is_nyse_open_day(candidate_date):
                 candidate_date += timedelta(days=1)
-            candidate_dt = datetime.combine(candidate_date, target_time, tzinfo=TZ_BA)
+            candidate_dt = datetime.combine(candidate_date, target_time, tzinfo=TZ_NY)
 
-        next_session_diff = candidate_dt - ba_now
+        next_session_diff = candidate_dt - ny_now
         next_session = {
             "bolsa": "NEW YORK",
             "target_dt": candidate_dt,
@@ -575,33 +577,34 @@ class BinanceOpeningCandleBot:
         candle_info = None
 
         # Verificar si hoy está abierta la Bolsa de New York
-        if not self.is_nyse_open_day(today_date):
+        if not self.is_nyse_open_day(today_date_ny):
             return {
                 "strategy_name": self.strategy_name,
                 "current_price": current_price,
                 "ba_now": ba_now,
+                "ny_now": ny_now,
                 "signal": None,
                 "candle_info": None,
                 "next_session": next_session
             }
 
-        # Diferencia de tiempo respecto a la apertura (10:30:00)
-        diff_seconds = (ba_now - target_dt).total_seconds()
+        # Diferencia de tiempo respecto a la apertura (09:30:00 New York)
+        diff_seconds = (ny_now - target_dt_ny).total_seconds()
 
-        # Ventana de evaluación: entre el cierre de la vela (60s = 10:31:00) y 300s (10:35:00)
+        # Ventana de evaluación: entre el cierre de la vela (60s = 09:31:00) y 300s (09:35:00)
         if 60 <= diff_seconds <= 300:
             if session_key not in self.processed_sessions:
-                candle = self.fetch_opening_candle(target_dt)
+                candle = self.fetch_opening_candle(target_dt_ny)
                 if candle and candle["is_closed"]:
                     candle_info = candle
                     # 6) entrada en long = si la vela apertura analizada es una vela roja
                     if candle["close"] < candle["open"]:
                         signal = "LONG"
-                        logging.info(f"Vela de apertura NYSE 10:30 hs ROJA detectada (Open: {candle['open']}, Close: {candle['close']}) -> Señal LONG.")
+                        logging.info(f"Vela de apertura NYSE 09:30 hs New York ROJA detectada (Open: {candle['open']}, Close: {candle['close']}) -> Señal LONG.")
                     # 6) entrada en short = si la vela apertura analizada es una vela verde
                     elif candle["close"] > candle["open"]:
                         signal = "SHORT"
-                        logging.info(f"Vela de apertura NYSE 10:30 hs VERDE detectada (Open: {candle['open']}, Close: {candle['close']}) -> Señal SHORT.")
+                        logging.info(f"Vela de apertura NYSE 09:30 hs New York VERDE detectada (Open: {candle['open']}, Close: {candle['close']}) -> Señal SHORT.")
                     else:
                         logging.info(f"Vela de apertura NYSE doji neutral ({candle['open']} == {candle['close']}). No se entra.")
 
@@ -611,6 +614,7 @@ class BinanceOpeningCandleBot:
             "strategy_name": self.strategy_name,
             "current_price": current_price,
             "ba_now": ba_now,
+            "ny_now": ny_now,
             "signal": signal,
             "candle_info": candle_info,
             "next_session": next_session
@@ -888,7 +892,9 @@ class BinanceOpeningCandleBot:
 
         # Formatear línea de horario (estado actual)
         ba_now = strat_data['ba_now']
+        ny_now = strat_data.get('ny_now', datetime.now(TZ_NY))
         now_str = ba_now.strftime('%Y-%m-%d %H:%M:%S')
+        ny_str = ny_now.strftime('%H:%M:%S')
 
         next_sess = strat_data.get('next_session')
         if next_sess:
@@ -897,11 +903,11 @@ class BinanceOpeningCandleBot:
             m = (rem_secs % 3600) // 60
             s = rem_secs % 60
             target_str = next_sess['target_dt'].strftime('%Y-%m-%d %H:%M')
-            countdown_str = f" | Proxima apertura NYSE: {target_str} (en {h:02d}h {m:02d}m {s:02d}s)"
+            countdown_str = f" | Proxima apertura NYSE (09:30 NY): {target_str} (en {h:02d}h {m:02d}m {s:02d}s)"
         else:
             countdown_str = ""
 
-        horario_line = f"{now_str} (Buenos Aires){countdown_str}"
+        horario_line = f"{now_str} (BA) | {ny_str} (NY){countdown_str}"
 
         # Construcción de pantalla monocroma (sin códigos de colores ANSI)
         lines = []
