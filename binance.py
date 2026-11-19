@@ -94,7 +94,7 @@ class BinanceOpeningCandleBot:
 
         # 6) TP y SL por ROI
         self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_ROI", "8.0")))
-        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", os.getenv("SL_ROI", "20.0")))
+        self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", os.getenv("SL_ROI", "10.0")))
 
         # Estimación de comisión para comisiones de salida/entrada (0.05% taker Binance Futures)
         self.fee_rate_pct = float(os.getenv("FEE_RATE_PCT", "0.05"))
