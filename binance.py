@@ -73,9 +73,12 @@ class BinanceOpeningCandleBot:
         "ROI",
         "% ROI",
         "comisiones",
-        "% comisiones"
+        "% comisiones",
+        "cuerpo",
+        "mechasup",
+        "mechainf"
     ]
-    DATA_COL_WIDTHS = [10, 8, 18, 17, 16, 13, 11, 12, 12]
+    DATA_COL_WIDTHS = [10, 8, 18, 17, 16, 13, 11, 12, 12, 10, 10, 10]
 
     def __init__(self):
         # 5) Claves API desde .envprivado
@@ -91,8 +94,9 @@ class BinanceOpeningCandleBot:
 
         self.strategy_name = os.getenv("STRATEGY_NAME", "Vela apertura")
         self.timeframe = os.getenv("TIMEFRAME", "1m")
+        self.min_body = float(os.getenv("MIN_BODY", "30.0"))
 
-        # 6) TP y SL por ROI
+        # 7) TP y SL por ROI
         self.take_profit_pct = float(os.getenv("TAKE_PROFIT_PCT", os.getenv("TP_ROI", "8.0")))
         self.stop_loss_pct = float(os.getenv("STOP_LOSS_PCT", os.getenv("SL_ROI", "10.0")))
 
@@ -131,6 +135,9 @@ class BinanceOpeningCandleBot:
         # Métricas de la operación en curso
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
+        self.entry_cuerpo = 0.0
+        self.entry_mechasup = 0.0
+        self.entry_mechainf = 0.0
 
         # Métricas históricas de la sesión
         self.bot_start_time = time.time()
@@ -444,6 +451,11 @@ class BinanceOpeningCandleBot:
             now_ms = int(time.time() * 1000)
             is_closed = now_ms >= candle_close_time
 
+            # 5) cuerpo, mechasup, mechainf en vela apertura 1 min
+            cuerpo = abs(open_p - close_p)
+            mechasup = abs(high_p - max(open_p, close_p))
+            mechainf = abs(low_p - min(open_p, close_p))
+
             return {
                 "open_time": candle_open_time,
                 "close_time": candle_close_time,
@@ -451,6 +463,9 @@ class BinanceOpeningCandleBot:
                 "high": high_p,
                 "low": low_p,
                 "close": close_p,
+                "cuerpo": cuerpo,
+                "mechasup": mechasup,
+                "mechainf": mechainf,
                 "is_closed": is_closed
             }
         except Exception as e:
@@ -597,14 +612,26 @@ class BinanceOpeningCandleBot:
                 candle = self.fetch_opening_candle(target_dt_ny)
                 if candle and candle["is_closed"]:
                     candle_info = candle
-                    # 6) entrada en long = si la vela apertura analizada es una vela roja
+                    cuerpo = candle.get("cuerpo", abs(candle["open"] - candle["close"]))
+                    mechasup = candle.get("mechasup", abs(candle["high"] - max(candle["open"], candle["close"])))
+                    mechainf = candle.get("mechainf", abs(candle["low"] - min(candle["open"], candle["close"])))
+
+                    logging.info(f"Vela apertura NYSE 1 min analizada -> Open: {candle['open']}, High: {candle['high']}, Low: {candle['low']}, Close: {candle['close']} | cuerpo: {cuerpo:.2f}, mechasup: {mechasup:.2f}, mechainf: {mechainf:.2f}")
+
+                    # 6) entrada en long = si la vela apertura analizada es una vela roja y cuerpo > 30
                     if candle["close"] < candle["open"]:
-                        signal = "LONG"
-                        logging.info(f"Vela de apertura NYSE 09:30 hs New York ROJA detectada (Open: {candle['open']}, Close: {candle['close']}) -> Señal LONG.")
-                    # 6) entrada en short = si la vela apertura analizada es una vela verde
+                        if cuerpo > self.min_body:
+                            signal = "LONG"
+                            logging.info(f"Señal LONG confirmada: Vela ROJA con cuerpo {cuerpo:.2f} > {self.min_body:.0f}.")
+                        else:
+                            logging.info(f"Sin entrada: Vela ROJA pero cuerpo {cuerpo:.2f} <= {self.min_body:.0f}.")
+                    # 6) entrada en short = si la vela apertura analizada es una vela verde y cuerpo > 30
                     elif candle["close"] > candle["open"]:
-                        signal = "SHORT"
-                        logging.info(f"Vela de apertura NYSE 09:30 hs New York VERDE detectada (Open: {candle['open']}, Close: {candle['close']}) -> Señal SHORT.")
+                        if cuerpo > self.min_body:
+                            signal = "SHORT"
+                            logging.info(f"Señal SHORT confirmada: Vela VERDE con cuerpo {cuerpo:.2f} > {self.min_body:.0f}.")
+                        else:
+                            logging.info(f"Sin entrada: Vela VERDE pero cuerpo {cuerpo:.2f} <= {self.min_body:.0f}.")
                     else:
                         logging.info(f"Vela de apertura NYSE doji neutral ({candle['open']} == {candle['close']}). No se entra.")
 
@@ -620,7 +647,7 @@ class BinanceOpeningCandleBot:
             "next_session": next_session
         }
 
-    def open_position(self, side, current_price):
+    def open_position(self, side, current_price, candle=None):
         """
         1) Modo Aislado, Apalancamiento 30x.
         5) Monto 90% de la cuenta de futuros.
@@ -637,7 +664,17 @@ class BinanceOpeningCandleBot:
             self.last_execution_error = err_msg
             return False
 
-        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f}")
+        # Guardar métricas de la vela de entrada para el registro en 2datos.txt
+        if candle:
+            self.entry_cuerpo = candle.get("cuerpo", 0.0)
+            self.entry_mechasup = candle.get("mechasup", 0.0)
+            self.entry_mechainf = candle.get("mechainf", 0.0)
+        else:
+            self.entry_cuerpo = 0.0
+            self.entry_mechasup = 0.0
+            self.entry_mechainf = 0.0
+
+        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f} | cuerpo: {self.entry_cuerpo:.2f}, mechasup: {self.entry_mechasup:.2f}, mechainf: {self.entry_mechainf:.2f}")
 
         if self.dry_run:
             self.current_position = side
@@ -763,7 +800,10 @@ class BinanceOpeningCandleBot:
             max_gain_pct=self.max_gain_pct,
             max_loss_pct=self.max_loss_pct,
             dur_secs=dur_secs,
-            exit_time=exit_time
+            exit_time=exit_time,
+            cuerpo=self.entry_cuerpo,
+            mechasup=self.entry_mechasup,
+            mechainf=self.entry_mechainf
         )
 
         # Resetear variables de posición
@@ -773,11 +813,14 @@ class BinanceOpeningCandleBot:
         self.entry_time = None
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
+        self.entry_cuerpo = 0.0
+        self.entry_mechasup = 0.0
+        self.entry_mechainf = 0.0
 
-    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time):
+    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time, cuerpo=0.0, mechasup=0.0, mechainf=0.0):
         """
         DETALLES 4: Graba en 2datos.txt con columnas alineadas:
-        dia, hora, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones
+        dia, hora, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones, cuerpo, mechasup, mechainf
         """
         # Determinación de ganada/perdida según ROI
         is_win = (roi_pct >= self.take_profit_pct) or (roi_usdt >= 0)
@@ -806,6 +849,10 @@ class BinanceOpeningCandleBot:
         gain_max_str = f"+{max_gain_pct:.2f}%"
         loss_max_str = f"{max_loss_pct:.2f}%" if max_loss_pct <= 0 else f"-{max_loss_pct:.2f}%"
 
+        cuerpo_str = f"{cuerpo:.2f}"
+        mechasup_str = f"{mechasup:.2f}"
+        mechainf_str = f"{mechainf:.2f}"
+
         row = [
             dia_str,
             hora_str,
@@ -815,7 +862,10 @@ class BinanceOpeningCandleBot:
             roi_str,
             roi_pct_str,
             comisiones_str,
-            pct_comisiones_str
+            pct_comisiones_str,
+            cuerpo_str,
+            mechasup_str,
+            mechainf_str
         ]
 
         line = " | ".join(val.ljust(w) for val, w in zip(row, self.DATA_COL_WIDTHS)) + "\n"
@@ -978,7 +1028,10 @@ class BinanceOpeningCandleBot:
                         max_gain_pct=self.max_gain_pct,
                         max_loss_pct=self.max_loss_pct,
                         dur_secs=dur_secs,
-                        exit_time=exit_time
+                        exit_time=exit_time,
+                        cuerpo=self.entry_cuerpo,
+                        mechasup=self.entry_mechasup,
+                        mechainf=self.entry_mechainf
                     )
                     self.current_position = None
                     self.entry_price = 0.0
@@ -986,6 +1039,9 @@ class BinanceOpeningCandleBot:
                     self.entry_time = None
                     self.max_gain_pct = 0.0
                     self.max_loss_pct = 0.0
+                    self.entry_cuerpo = 0.0
+                    self.entry_mechasup = 0.0
+                    self.entry_mechainf = 0.0
 
                 roi_pct = 0.0
                 dur_secs = 0.0
@@ -1023,10 +1079,11 @@ class BinanceOpeningCandleBot:
 
                 # 5. Lógica de entradas:
                 # 3) Máximo 1 entrada a la vez
-                # 6) Vela roja -> LONG | Vela verde -> SHORT | Monto 90%
+                # 6) Vela roja y cuerpo > 30 -> LONG | Vela verde y cuerpo > 30 -> SHORT | Monto 90%
                 if active_pos is None and strat_data["signal"]:
                     sig = strat_data["signal"]
-                    self.open_position(side=sig, current_price=curr_price)
+                    candle = strat_data.get("candle_info")
+                    self.open_position(side=sig, current_price=curr_price, candle=candle)
 
                 time.sleep(self.poll_interval)
 
