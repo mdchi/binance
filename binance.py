@@ -63,22 +63,24 @@ finally:
 
 
 class BinanceOpeningCandleBot:
-    # Columnas y anchos para 2datos.txt
-    DATA_COL_NAMES = [
-        "dia",
-        "hora",
-        "duracion operacion",
-        "% ganancia maximo",
-        "% perdida maximo",
-        "ROI",
-        "% ROI",
-        "comisiones",
-        "% comisiones",
-        "cuerpo",
-        "mechasup",
-        "mechainf"
+    # Columnas en 2 líneas para achicar el ancho de las columnas en 2datos.txt
+    # (encabezado línea 1, encabezado línea 2, ancho de columna)
+    DATA_COLUMNS = [
+        ("dia", "", 10),
+        ("hora", "", 8),
+        ("long/", "short", 6),
+        ("duracion", "operacion", 9),
+        ("% ganancia", "maximo", 10),
+        ("% perdida", "maximo", 9),
+        ("ROI", "", 11),
+        ("% ROI", "", 8),
+        ("comisiones", "", 11),
+        ("% comi-", "siones", 7),
+        ("verde/", "roja", 6),
+        ("cuerpo", "", 8),
+        ("mechasup", "", 8),
+        ("mechainf", "", 8),
     ]
-    DATA_COL_WIDTHS = [10, 8, 18, 17, 16, 13, 11, 12, 12, 10, 10, 10]
 
     def __init__(self):
         # 5) Claves API desde .envprivado
@@ -135,6 +137,7 @@ class BinanceOpeningCandleBot:
         # Métricas de la operación en curso
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
+        self.entry_color = ""
         self.entry_cuerpo = 0.0
         self.entry_mechasup = 0.0
         self.entry_mechainf = 0.0
@@ -152,14 +155,17 @@ class BinanceOpeningCandleBot:
         self._initialize_client()
 
     def _init_data_file(self):
-        """DETALLES 4: Inicializa 2datos.txt con encabezados alineados si no existe o está vacío."""
-        header = " | ".join(name.ljust(w) for name, w in zip(self.DATA_COL_NAMES, self.DATA_COL_WIDTHS)) + "\n"
-        separator = "-+-".join("-" * w for w in self.DATA_COL_WIDTHS) + "\n"
+        """DETALLES 5: Inicializa 2datos.txt con cabecera de 2 líneas alineadas para achicar ancho de columnas."""
+        widths = [col[2] for col in self.DATA_COLUMNS]
+        h_line1 = " | ".join(col[0].ljust(col[2]) for col in self.DATA_COLUMNS) + "\n"
+        h_line2 = " | ".join(col[1].ljust(col[2]) for col in self.DATA_COLUMNS) + "\n"
+        separator = "-+-".join("-" * w for w in widths) + "\n"
         filename = "2datos.txt"
         if not os.path.exists(filename) or os.path.getsize(filename) == 0:
             try:
                 with open(filename, "w", encoding="utf-8") as f:
-                    f.write(header)
+                    f.write(h_line1)
+                    f.write(h_line2)
                     f.write(separator)
             except Exception as e:
                 logging.error(f"Error inicializando {filename}: {e}")
@@ -173,9 +179,9 @@ class BinanceOpeningCandleBot:
             with open(filename, "r", encoding="utf-8") as f:
                 for line in f:
                     parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 8:
+                    if len(parts) >= 14:
                         try:
-                            val_str = parts[5].replace("USDT", "").replace("+", "").strip()
+                            val_str = parts[6].replace("USDT", "").replace("+", "").strip()
                             roi_val = float(val_str)
                             if roi_val >= 0:
                                 self.winning_trades += 1
@@ -620,6 +626,7 @@ class BinanceOpeningCandleBot:
 
                     # 6) entrada en long = si la vela apertura analizada es una vela roja y cuerpo > 30
                     if candle["close"] < candle["open"]:
+                        candle["color"] = "roja"
                         if cuerpo > self.min_body:
                             signal = "LONG"
                             logging.info(f"Señal LONG confirmada: Vela ROJA con cuerpo {cuerpo:.2f} > {self.min_body:.0f}.")
@@ -627,12 +634,14 @@ class BinanceOpeningCandleBot:
                             logging.info(f"Sin entrada: Vela ROJA pero cuerpo {cuerpo:.2f} <= {self.min_body:.0f}.")
                     # 6) entrada en short = si la vela apertura analizada es una vela verde y cuerpo > 30
                     elif candle["close"] > candle["open"]:
+                        candle["color"] = "verde"
                         if cuerpo > self.min_body:
                             signal = "SHORT"
                             logging.info(f"Señal SHORT confirmada: Vela VERDE con cuerpo {cuerpo:.2f} > {self.min_body:.0f}.")
                         else:
                             logging.info(f"Sin entrada: Vela VERDE pero cuerpo {cuerpo:.2f} <= {self.min_body:.0f}.")
                     else:
+                        candle["color"] = "doji"
                         logging.info(f"Vela de apertura NYSE doji neutral ({candle['open']} == {candle['close']}). No se entra.")
 
                     self.processed_sessions.add(session_key)
@@ -666,15 +675,17 @@ class BinanceOpeningCandleBot:
 
         # Guardar métricas de la vela de entrada para el registro en 2datos.txt
         if candle:
+            self.entry_color = candle.get("color", "roja" if side == "LONG" else "verde")
             self.entry_cuerpo = candle.get("cuerpo", 0.0)
             self.entry_mechasup = candle.get("mechasup", 0.0)
             self.entry_mechainf = candle.get("mechainf", 0.0)
         else:
+            self.entry_color = "roja" if side == "LONG" else "verde"
             self.entry_cuerpo = 0.0
             self.entry_mechasup = 0.0
             self.entry_mechainf = 0.0
 
-        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f} | cuerpo: {self.entry_cuerpo:.2f}, mechasup: {self.entry_mechasup:.2f}, mechainf: {self.entry_mechainf:.2f}")
+        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f} | vela: {self.entry_color}, cuerpo: {self.entry_cuerpo:.2f}, mechasup: {self.entry_mechasup:.2f}, mechainf: {self.entry_mechainf:.2f}")
 
         if self.dry_run:
             self.current_position = side
@@ -801,6 +812,8 @@ class BinanceOpeningCandleBot:
             max_loss_pct=self.max_loss_pct,
             dur_secs=dur_secs,
             exit_time=exit_time,
+            pos_side=side,
+            color=self.entry_color,
             cuerpo=self.entry_cuerpo,
             mechasup=self.entry_mechasup,
             mechainf=self.entry_mechainf
@@ -813,14 +826,15 @@ class BinanceOpeningCandleBot:
         self.entry_time = None
         self.max_gain_pct = 0.0
         self.max_loss_pct = 0.0
+        self.entry_color = ""
         self.entry_cuerpo = 0.0
         self.entry_mechasup = 0.0
         self.entry_mechainf = 0.0
 
-    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time, cuerpo=0.0, mechasup=0.0, mechainf=0.0):
+    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time, pos_side="LONG", color="", cuerpo=0.0, mechasup=0.0, mechainf=0.0):
         """
-        DETALLES 4: Graba en 2datos.txt con columnas alineadas:
-        dia, hora, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones, cuerpo, mechasup, mechainf
+        DETALLES 5: Graba en 2datos.txt con columnas alineadas y cabecera de 2 líneas:
+        dia, hora, long/short, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones, verde/roja, cuerpo, mechasup, mechainf
         """
         # Determinación de ganada/perdida según ROI
         is_win = (roi_pct >= self.take_profit_pct) or (roi_usdt >= 0)
@@ -841,6 +855,7 @@ class BinanceOpeningCandleBot:
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
+        pos_side_str = str(pos_side).upper()
 
         mins = int(dur_secs // 60)
         secs = int(dur_secs % 60)
@@ -849,6 +864,7 @@ class BinanceOpeningCandleBot:
         gain_max_str = f"+{max_gain_pct:.2f}%"
         loss_max_str = f"{max_loss_pct:.2f}%" if max_loss_pct <= 0 else f"-{max_loss_pct:.2f}%"
 
+        color_str = str(color).lower()
         cuerpo_str = f"{cuerpo:.2f}"
         mechasup_str = f"{mechasup:.2f}"
         mechainf_str = f"{mechainf:.2f}"
@@ -856,6 +872,7 @@ class BinanceOpeningCandleBot:
         row = [
             dia_str,
             hora_str,
+            pos_side_str,
             dur_str,
             gain_max_str,
             loss_max_str,
@@ -863,12 +880,14 @@ class BinanceOpeningCandleBot:
             roi_pct_str,
             comisiones_str,
             pct_comisiones_str,
+            color_str,
             cuerpo_str,
             mechasup_str,
             mechainf_str
         ]
 
-        line = " | ".join(val.ljust(w) for val, w in zip(row, self.DATA_COL_WIDTHS)) + "\n"
+        widths = [col[2] for col in self.DATA_COLUMNS]
+        line = " | ".join(val.ljust(w) for val, w in zip(row, widths)) + "\n"
 
         filename = "2datos.txt"
         try:
@@ -880,16 +899,24 @@ class BinanceOpeningCandleBot:
 
     def render_screen(self, strat_data, active_pos, entry, roi_pct, dur_secs):
         """
-        DETALLES 2 y 3:
-        - Mantener cabecera siempre visible en pantalla.
-        - Mantener visible en pantalla unicamente el estado actual.
+        DETALLES 2, 3 y 4:
+        - Mantener cabecera siempre visible en pantalla (líneas 1 a 5).
+        - Mantener visible en pantalla unicamente el estado actual (líneas 1 a 4).
         - No utilizar colores en todo el texto visualizado en pantalla.
         - Reposicionar el cursor al inicio de la pantalla (\033[H) antes de actualizar en vez de borrar por completo.
+
+        Formato de cabecera:
+           linea 1: titulo
+           linea 2: simbolo, modo, apalancamiento, monto
+           linea 3: saldo wallet, disponible, pnl no realizado
+           linea 4: dias y horarios que se aplica la estrategia
+           linea 5: reglas detalladas de la estrategia
+
         Formato del estado actual para estrategia:
-        en una linea: nombre de estrategia
-        en otra linea: precio
-        en otra linea: horario
-        en otra linea: posicion
+           linea 1: nombre de estrategia
+           linea 2: precio
+           linea 3: horario incluyendo contador regresivo en formato hs:min:seg
+           linea 4: posicion
         """
         # Reposicionar el cursor al inicio de la pantalla sin borrar todo (evita parpadeo)
         sys.stdout.write("\033[H")
@@ -899,20 +926,16 @@ class BinanceOpeningCandleBot:
             wallet_bal = self.simulated_balance
             avail_bal = self.simulated_balance
             unrealized = 0.0
-            has_keys = False
         elif self.client and self.api_key and self.api_secret:
             try:
                 acc = self.client.futures_account()
                 wallet_bal = float(acc.get('totalWalletBalance', 0.0))
                 avail_bal = float(acc.get('availableBalance', 0.0))
                 unrealized = float(acc.get('totalUnrealizedProfit', 0.0))
-                has_keys = True
             except Exception:
-                wallet_bal, avail_bal, unrealized, has_keys = 0.0, 0.0, 0.0, True
+                wallet_bal, avail_bal, unrealized = 0.0, 0.0, 0.0
         else:
-            wallet_bal, avail_bal, unrealized, has_keys = 0.0, 0.0, 0.0, False
-
-        uptime_hours = (time.time() - self.bot_start_time) / 3600.0
+            wallet_bal, avail_bal, unrealized = 0.0, 0.0, 0.0
 
         # Formatear línea de posición (estado actual)
         curr_price = strat_data['current_price']
@@ -940,51 +963,53 @@ class BinanceOpeningCandleBot:
         else:
             pos_line = "SIN POSICION"
 
-        # Formatear línea de horario (estado actual)
+        # Formatear línea de horario con contador regresivo en formato hs:min:seg (estado actual)
         ba_now = strat_data['ba_now']
-        ny_now = strat_data.get('ny_now', datetime.now(TZ_NY))
         now_str = ba_now.strftime('%Y-%m-%d %H:%M:%S')
-        ny_str = ny_now.strftime('%H:%M:%S')
 
         next_sess = strat_data.get('next_session')
         if next_sess:
-            rem_secs = int(next_sess['diff'].total_seconds())
+            rem_secs = max(0, int(next_sess['diff'].total_seconds()))
             h = rem_secs // 3600
             m = (rem_secs % 3600) // 60
             s = rem_secs % 60
+            countdown_fmt = f"{h:02d}:{m:02d}:{s:02d}"
             target_str = next_sess['target_dt'].strftime('%Y-%m-%d %H:%M')
-            countdown_str = f" | Proxima apertura NYSE (09:30 NY): {target_str} (en {h:02d}h {m:02d}m {s:02d}s)"
+            horario_line = f"{now_str} (BA) | Proxima apertura NYSE 09:30 NY ({target_str}): cuenta regresiva {countdown_fmt}"
         else:
-            countdown_str = ""
-
-        horario_line = f"{now_str} (BA) | {ny_str} (NY){countdown_str}"
+            horario_line = f"{now_str} (BA)"
 
         # Construcción de pantalla monocroma (sin códigos de colores ANSI)
         lines = []
-        lines.append("========================================================================================")
-        lines.append("             BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VELA APERTURA               ")
-        lines.append("========================================================================================")
-        lines.append(f"Simbolo: {self.symbol} | Modo: {self.margin_type} | Apalancamiento: {self.leverage}x | Monto: {self.margin_pct:.0f}% de la cuenta USDT")
-        lines.append(f"Modo de Ejecucion: {'SIMULACION (DRY-RUN)' if self.dry_run else 'DINERO REAL (Binance Futures)'}")
-        if has_keys:
-            lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT | Disponible: {avail_bal:.2f} USDT | PnL No Realizado: {unrealized:.2f} USDT")
-        else:
-            lines.append(f"Saldo Wallet: {wallet_bal:.2f} USDT (Modo simulado)")
-        lines.append(f"Apertura NYSE: {self.nyse_open_hour:02d}:{self.nyse_open_minute:02d} hs (Buenos Aires) - Solo dias habiles NYSE")
-        lines.append(f"Reglas: Vela roja -> LONG | Vela verde -> SHORT | TP: ROI {self.take_profit_pct:.1f}% | SL: ROI -{self.stop_loss_pct:.1f}%")
-        lines.append("----------------------------------------------------------------------------------------")
-        lines.append(f"Tiempo activo: {uptime_hours:.2f}h | Operaciones Ganadas: {self.winning_trades} (+{self.money_won:.2f} USDT) | Perdidas: {self.losing_trades} (-{self.money_lost:.2f} USDT)")
-        lines.append("========================================================================================")
 
-        # DETALLES 2: Formato del estado actual para estrategia (exactamente 4 líneas requeridas)
+        # 2) El formato de cabecera:
+        # linea 1: titulo
+        lines.append("BOT DE TRADING AUTOMATICO BINANCE - ESTRATEGIA VELA APERTURA")
+        # linea 2: simbolo, modo, apalancamiento, monto
+        lines.append(f"simbolo: {self.symbol} | modo: {self.margin_type} | apalancamiento: {self.leverage}x | monto: {self.margin_pct:.0f}% de la cuenta futuros")
+        # linea 3: saldo wallet, disponible, pnl no realizado
+        lines.append(f"saldo wallet: {wallet_bal:.2f} USDT | disponible: {avail_bal:.2f} USDT | pnl no realizado: {unrealized:.2f} USDT")
+        # linea 4: dias y horarios que se aplica la estrategia
+        lines.append("dias y horarios: Lunes a Viernes dias habiles de bolsa de New York a las 09:30 hs (horario New York por la mañana)")
+        # linea 5: reglas detalladas de la estrategia
+        lines.append(f"reglas: Vela apertura 1 min | roja y cuerpo > {self.min_body:.0f} -> LONG | verde y cuerpo > {self.min_body:.0f} -> SHORT | TP: ROI {self.take_profit_pct:.1f}% | SL: ROI -{self.stop_loss_pct:.1f}% | maximo 1 entrada")
+        # linea 6: espacio (no linea horizontal)
+        lines.append("")
+
+        # 3) El formato del estado actual para estrategia:
+        # linea 1: nombre de estrategia
         lines.append(f"nombre de estrategia: {strat_data['strategy_name']}")
+        # linea 2: precio
         lines.append(f"precio: ${curr_price:.2f}")
+        # linea 3: horario incluyendo contador regresivo en formato hs:min:seg
         lines.append(f"horario: {horario_line}")
+        # linea 4: posicion
         lines.append(f"posicion: {pos_line}")
-        lines.append("========================================================================================")
+        # linea 5: espacio (no linea horizontal)
+        lines.append("")
 
-        # Ajuste de ancho a 88 caracteres para sobreescribir líneas previas limpiamente
-        output_buffer = "\n".join(l.ljust(88) for l in lines) + "\n\033[J"
+        # Ajuste de ancho para sobreescribir líneas previas limpiamente sin parpadeos
+        output_buffer = "\n".join(l.ljust(114) for l in lines) + "\n\033[J"
         sys.stdout.write(output_buffer)
         sys.stdout.flush()
 
@@ -1029,6 +1054,8 @@ class BinanceOpeningCandleBot:
                         max_loss_pct=self.max_loss_pct,
                         dur_secs=dur_secs,
                         exit_time=exit_time,
+                        pos_side=side,
+                        color=self.entry_color,
                         cuerpo=self.entry_cuerpo,
                         mechasup=self.entry_mechasup,
                         mechainf=self.entry_mechainf
@@ -1039,6 +1066,7 @@ class BinanceOpeningCandleBot:
                     self.entry_time = None
                     self.max_gain_pct = 0.0
                     self.max_loss_pct = 0.0
+                    self.entry_color = ""
                     self.entry_cuerpo = 0.0
                     self.entry_mechasup = 0.0
                     self.entry_mechainf = 0.0
