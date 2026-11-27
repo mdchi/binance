@@ -72,14 +72,14 @@ class BinanceOpeningCandleBot:
         ("duracion", "operacion", 9),
         ("% ganancia", "maximo", 10),
         ("% perdida", "maximo", 9),
-        ("ROI", "", 11),
-        ("% ROI", "", 8),
-        ("comisiones", "", 11),
-        ("% comi-", "siones", 7),
+        ("ROI", "(% ROI)", 20),
+        ("comisiones", "(% comisiones)", 25),
         ("verde/", "roja", 6),
         ("cuerpo", "", 8),
         ("mechasup", "", 8),
         ("mechainf", "", 8),
+        ("PnL", "", 12),
+        ("PnL total", "", 12),
     ]
 
     def __init__(self):
@@ -148,6 +148,8 @@ class BinanceOpeningCandleBot:
         self.losing_trades = 0
         self.money_won = 0.0
         self.money_lost = 0.0
+        self.balance_before_entry = 0.0
+        self.cumulative_pnl = 0.0
 
         # Inicialización de archivo 2datos.txt y conexión
         self._init_data_file()
@@ -171,7 +173,7 @@ class BinanceOpeningCandleBot:
                 logging.error(f"Error inicializando {filename}: {e}")
 
     def _load_historical_metrics(self):
-        """Carga métricas históricas desde 2datos.txt para mantener contadores al reiniciar."""
+        """Carga métricas históricas desde 2datos.txt para mantener contadores y PnL total al reiniciar."""
         filename = "2datos.txt"
         if not os.path.exists(filename):
             return
@@ -181,14 +183,21 @@ class BinanceOpeningCandleBot:
                     parts = [p.strip() for p in line.split("|")]
                     if len(parts) >= 14:
                         try:
+                            # Columna 6: ROI USDT (% ROI)
                             val_str = parts[6].replace("USDT", "").replace("+", "").strip()
-                            roi_val = float(val_str)
+                            roi_val = float(val_str.split()[0]) if val_str else 0.0
                             if roi_val >= 0:
                                 self.winning_trades += 1
                                 self.money_won += roi_val
                             else:
                                 self.losing_trades += 1
                                 self.money_lost += abs(roi_val)
+
+                            # Columna 12: PnL de la operación individual
+                            pnl_str = parts[12].replace("USDT", "").replace("+", "").strip()
+                            if pnl_str:
+                                pnl_val = float(pnl_str)
+                                self.cumulative_pnl += pnl_val
                         except Exception:
                             pass
         except Exception as e:
@@ -389,6 +398,23 @@ class BinanceOpeningCandleBot:
         except Exception as e:
             logging.error(f"Error consultando posición activa de {self.symbol}: {e}")
             return self.current_position, self.entry_price, self.position_qty
+
+    def get_wallet_balance(self):
+        """Consulta el saldo total de la wallet de Binance Futures (totalWalletBalance)."""
+        if self.dry_run or not self.client or not self.api_key or not self.api_secret:
+            return self.simulated_balance
+
+        try:
+            acc = self.client.futures_account()
+            wallet_bal = float(acc.get('totalWalletBalance', 0.0))
+            for asset in acc.get('assets', []):
+                if asset.get('asset') == 'USDT':
+                    wallet_bal = float(asset.get('walletBalance', wallet_bal))
+                    break
+            return wallet_bal
+        except Exception as e:
+            logging.error(f"Error consultando saldo wallet de USDT: {e}")
+            return self.get_available_balance()
 
     def get_available_balance(self):
         """Consulta el saldo USDT disponible en la cuenta de Binance Futures."""
@@ -685,7 +711,10 @@ class BinanceOpeningCandleBot:
             self.entry_mechasup = 0.0
             self.entry_mechainf = 0.0
 
-        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f} | vela: {self.entry_color}, cuerpo: {self.entry_cuerpo:.2f}, mechasup: {self.entry_mechasup:.2f}, mechainf: {self.entry_mechainf:.2f}")
+        # Registrar saldo antes de la operación para el cálculo de PnL
+        self.balance_before_entry = self.get_wallet_balance()
+
+        logging.info(f"EJECUTANDO ENTRADA {side}: Margen ${self.actual_margin_used:.2f} USDT ({self.margin_pct}%) x {self.leverage}x = ${qty * current_price:.2f} USDT ({qty} {self.symbol}) @ ${current_price:.2f} | Saldo antes: ${self.balance_before_entry:.2f} USDT | vela: {self.entry_color}, cuerpo: {self.entry_cuerpo:.2f}, mechasup: {self.entry_mechasup:.2f}, mechainf: {self.entry_mechainf:.2f}")
 
         if self.dry_run:
             self.current_position = side
@@ -782,6 +811,8 @@ class BinanceOpeningCandleBot:
                     reduceOnly=True
                 )
                 logging.info(f"Orden MARKET de cierre {side} ejecutada.")
+                # Breve espera para que Binance asiente el balance luego del cierre
+                time.sleep(1)
             except Exception as e:
                 logging.error(f"Error ejecutando orden de cierre en Binance: {e}")
 
@@ -799,8 +830,17 @@ class BinanceOpeningCandleBot:
         roi_pct = (gross_pnl_usdt / actual_margin) * 100.0 if actual_margin > 0 else 0.0
         fees_pct = (total_fees / actual_margin) * 100.0 if actual_margin > 0 else 0.0
 
+        # PnL = saldo cuenta futuros antes de operacion - saldo cuenta futuros luego de operacion
+        # Nota: en finanzas y según fórmula del prompt, se mide la diferencia entre los saldos de la cuenta
+        bal_before = self.balance_before_entry if self.balance_before_entry > 0 else self.get_wallet_balance()
         if self.dry_run:
             self.simulated_balance += (gross_pnl_usdt - total_fees)
+            bal_after = self.simulated_balance
+        else:
+            bal_after = self.get_wallet_balance()
+
+        pnl_trade = bal_after - bal_before if not self.dry_run else (gross_pnl_usdt - total_fees)
+        self.cumulative_pnl += pnl_trade
 
         # Registrar en 2datos.txt
         self._record_trade_data(
@@ -816,7 +856,9 @@ class BinanceOpeningCandleBot:
             color=self.entry_color,
             cuerpo=self.entry_cuerpo,
             mechasup=self.entry_mechasup,
-            mechainf=self.entry_mechainf
+            mechainf=self.entry_mechainf,
+            pnl_usdt=pnl_trade,
+            pnl_total=self.cumulative_pnl
         )
 
         # Resetear variables de posición
@@ -831,10 +873,10 @@ class BinanceOpeningCandleBot:
         self.entry_mechasup = 0.0
         self.entry_mechainf = 0.0
 
-    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time, pos_side="LONG", color="", cuerpo=0.0, mechasup=0.0, mechainf=0.0):
+    def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time, pos_side="LONG", color="", cuerpo=0.0, mechasup=0.0, mechainf=0.0, pnl_usdt=0.0, pnl_total=0.0):
         """
-        DETALLES 5: Graba en 2datos.txt con columnas alineadas y cabecera de 2 líneas:
-        dia, hora, long/short, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones, verde/roja, cuerpo, mechasup, mechainf
+        5) Graba en 2datos.txt con columnas alineadas y cabecera de 2 líneas:
+        dia, hora, long/short, duracion operacion, % ganancia maximo, % perdida maximo, ROI (% ROI), comisiones (% comisiones), verde/roja, cuerpo, mechasup, mechainf, PnL, PnL total
         """
         # Determinación de ganada/perdida según ROI
         is_win = (roi_pct >= self.take_profit_pct) or (roi_usdt >= 0)
@@ -842,16 +884,13 @@ class BinanceOpeningCandleBot:
         if is_win:
             self.winning_trades += 1
             self.money_won += roi_usdt
-            roi_str = f"+{roi_usdt:.2f} USDT"
-            roi_pct_str = f"+{roi_pct:.2f}%"
+            roi_str = f"+{roi_usdt:.2f} USDT (+{roi_pct:.2f}%)"
         else:
             self.losing_trades += 1
             self.money_lost += abs(roi_usdt)
-            roi_str = f"{roi_usdt:.2f} USDT"
-            roi_pct_str = f"{roi_pct:.2f}%"
+            roi_str = f"{roi_usdt:.2f} USDT ({roi_pct:.2f}%)"
 
-        comisiones_str = f"{total_fees_usdt:.2f} USDT"
-        pct_comisiones_str = f"{fees_pct:.2f}%"
+        comisiones_str = f"{total_fees_usdt:.2f} USDT ({fees_pct:.2f}%)"
 
         dia_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
@@ -869,6 +908,9 @@ class BinanceOpeningCandleBot:
         mechasup_str = f"{mechasup:.2f}"
         mechainf_str = f"{mechainf:.2f}"
 
+        pnl_str = f"+{pnl_usdt:.2f} USDT" if pnl_usdt >= 0 else f"{pnl_usdt:.2f} USDT"
+        pnl_total_str = f"+{pnl_total:.2f} USDT" if pnl_total >= 0 else f"{pnl_total:.2f} USDT"
+
         row = [
             dia_str,
             hora_str,
@@ -877,13 +919,13 @@ class BinanceOpeningCandleBot:
             gain_max_str,
             loss_max_str,
             roi_str,
-            roi_pct_str,
             comisiones_str,
-            pct_comisiones_str,
             color_str,
             cuerpo_str,
             mechasup_str,
-            mechainf_str
+            mechainf_str,
+            pnl_str,
+            pnl_total_str
         ]
 
         widths = [col[2] for col in self.DATA_COLUMNS]
