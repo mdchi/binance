@@ -63,23 +63,25 @@ finally:
 
 
 class BinanceOpeningCandleBot:
-    # Columnas en 2 líneas para achicar el ancho de las columnas en 2datos.txt
-    # (encabezado línea 1, encabezado línea 2, ancho de columna)
+    # Columnas en 1 línea para 2datos.txt
+    # (nombre de columna, ancho de columna)
     DATA_COLUMNS = [
-        ("dia", "", 10),
-        ("hora", "", 8),
-        ("long/", "short", 6),
-        ("duracion", "operacion", 9),
-        ("% ganancia", "maximo", 10),
-        ("% perdida", "maximo", 9),
-        ("ROI", "(% ROI)", 20),
-        ("comisiones", "(% comisiones)", 25),
-        ("verde/", "roja", 6),
-        ("cuerpo", "", 8),
-        ("mechasup", "", 8),
-        ("mechainf", "", 8),
-        ("PnL", "", 12),
-        ("PnL total", "", 12),
+        ("fecha", 12),
+        ("hora", 10),
+        ("long/short", 12),
+        ("duracion operacion", 20),
+        ("% ganancia maximo", 20),
+        ("% perdida maximo", 19),
+        ("ROI", 14),
+        ("% ROI", 10),
+        ("comisiones", 14),
+        ("% comisiones", 14),
+        ("verde/roja", 12),
+        ("cuerpo", 10),
+        ("mechasup", 10),
+        ("mechainf", 10),
+        ("PnL", 14),
+        ("PnL total", 14),
     ]
 
     def __init__(self):
@@ -157,18 +159,13 @@ class BinanceOpeningCandleBot:
         self._initialize_client()
 
     def _init_data_file(self):
-        """DETALLES 5: Inicializa 2datos.txt con cabecera de 2 líneas alineadas para achicar ancho de columnas."""
-        widths = [col[2] for col in self.DATA_COLUMNS]
-        h_line1 = " | ".join(col[0].ljust(col[2]) for col in self.DATA_COLUMNS) + "\n"
-        h_line2 = " | ".join(col[1].ljust(col[2]) for col in self.DATA_COLUMNS) + "\n"
-        separator = "-+-".join("-" * w for w in widths) + "\n"
+        """DETALLES 5: Inicializa 2datos.txt con cabecera en 1 línea alineada a la izquierda y sin líneas de tabla."""
+        h_line = "  ".join(col[0].ljust(col[1]) for col in self.DATA_COLUMNS).rstrip() + "\n"
         filename = "2datos.txt"
         if not os.path.exists(filename) or os.path.getsize(filename) == 0:
             try:
                 with open(filename, "w", encoding="utf-8") as f:
-                    f.write(h_line1)
-                    f.write(h_line2)
-                    f.write(separator)
+                    f.write(h_line)
             except Exception as e:
                 logging.error(f"Error inicializando {filename}: {e}")
 
@@ -179,27 +176,68 @@ class BinanceOpeningCandleBot:
             return
         try:
             with open(filename, "r", encoding="utf-8") as f:
-                for line in f:
-                    parts = [p.strip() for p in line.split("|")]
-                    if len(parts) >= 14:
-                        try:
-                            # Columna 6: ROI USDT (% ROI)
-                            val_str = parts[6].replace("USDT", "").replace("+", "").strip()
-                            roi_val = float(val_str.split()[0]) if val_str else 0.0
-                            if roi_val >= 0:
-                                self.winning_trades += 1
-                                self.money_won += roi_val
-                            else:
-                                self.losing_trades += 1
-                                self.money_lost += abs(roi_val)
+                lines = f.readlines()
+            # Omitir la línea de cabecera si existe
+            data_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                # Descartar cabeceras conocidas
+                if stripped.startswith("fecha") or stripped.startswith("dia"):
+                    continue
+                data_lines.append(line)
 
-                            # Columna 12: PnL de la operación individual
-                            pnl_str = parts[12].replace("USDT", "").replace("+", "").strip()
-                            if pnl_str:
-                                pnl_val = float(pnl_str)
-                                self.cumulative_pnl += pnl_val
-                        except Exception:
-                            pass
+            for line in data_lines:
+                # Si la línea tiene separadores '|' (formato anterior)
+                if "|" in line:
+                    parts = [p.strip() for p in line.split("|")]
+                else:
+                    # Extraer por ancho fijo de columnas
+                    parts = []
+                    pos = 0
+                    for col in self.DATA_COLUMNS:
+                        w = col[1]
+                        val = line[pos:pos+w].strip() if pos < len(line) else ""
+                        parts.append(val)
+                        pos += w + 2
+
+                if len(parts) >= 16:
+                    try:
+                        # Columna 6: ROI (USDT)
+                        val_str = parts[6].replace("USDT", "").replace("+", "").strip()
+                        roi_val = float(val_str) if val_str else 0.0
+                        if roi_val >= 0:
+                            self.winning_trades += 1
+                            self.money_won += roi_val
+                        else:
+                            self.losing_trades += 1
+                            self.money_lost += abs(roi_val)
+
+                        # Columna 14: PnL (USDT)
+                        pnl_str = parts[14].replace("USDT", "").replace("+", "").strip()
+                        if pnl_str:
+                            pnl_val = float(pnl_str)
+                            self.cumulative_pnl += pnl_val
+                    except Exception:
+                        pass
+                elif len(parts) >= 14:
+                    try:
+                        val_str = parts[6].replace("USDT", "").replace("+", "").strip()
+                        roi_val = float(val_str.split()[0]) if val_str else 0.0
+                        if roi_val >= 0:
+                            self.winning_trades += 1
+                            self.money_won += roi_val
+                        else:
+                            self.losing_trades += 1
+                            self.money_lost += abs(roi_val)
+
+                        pnl_str = parts[12].replace("USDT", "").replace("+", "").strip()
+                        if pnl_str:
+                            pnl_val = float(pnl_str)
+                            self.cumulative_pnl += pnl_val
+                    except Exception:
+                        pass
         except Exception as e:
             logging.warning(f"Nota al leer métricas históricas: {e}")
 
@@ -876,7 +914,8 @@ class BinanceOpeningCandleBot:
     def _record_trade_data(self, roi_usdt, roi_pct, total_fees_usdt, fees_pct, max_gain_pct, max_loss_pct, dur_secs, exit_time, pos_side="LONG", color="", cuerpo=0.0, mechasup=0.0, mechainf=0.0, pnl_usdt=0.0, pnl_total=0.0):
         """
         5) Graba en 2datos.txt con columnas alineadas y cabecera de 2 líneas:
-        dia, hora, long/short, duracion operacion, % ganancia maximo, % perdida maximo, ROI (% ROI), comisiones (% comisiones), verde/roja, cuerpo, mechasup, mechainf, PnL, PnL total
+        fecha, hora, long/short, duracion operacion, % ganancia maximo, % perdida maximo, ROI, % ROI, comisiones, % comisiones, verde/roja, cuerpo, mechasup, mechainf, PnL, PnL total
+        El texto de la cabecera y de las filas alineado a la izquierda respetando la alineacion de cada columna, sin líneas de tabla.
         """
         # Determinación de ganada/perdida según ROI
         is_win = (roi_pct >= self.take_profit_pct) or (roi_usdt >= 0)
@@ -884,15 +923,18 @@ class BinanceOpeningCandleBot:
         if is_win:
             self.winning_trades += 1
             self.money_won += roi_usdt
-            roi_str = f"+{roi_usdt:.2f} USDT (+{roi_pct:.2f}%)"
+            roi_str = f"+{roi_usdt:.2f} USDT"
+            roi_pct_str = f"+{roi_pct:.2f}%"
         else:
             self.losing_trades += 1
             self.money_lost += abs(roi_usdt)
-            roi_str = f"{roi_usdt:.2f} USDT ({roi_pct:.2f}%)"
+            roi_str = f"{roi_usdt:.2f} USDT"
+            roi_pct_str = f"{roi_pct:.2f}%"
 
-        comisiones_str = f"{total_fees_usdt:.2f} USDT ({fees_pct:.2f}%)"
+        comisiones_str = f"{total_fees_usdt:.2f} USDT"
+        comisiones_pct_str = f"{fees_pct:.2f}%"
 
-        dia_str = exit_time.strftime('%Y-%m-%d')
+        fecha_str = exit_time.strftime('%Y-%m-%d')
         hora_str = exit_time.strftime('%H:%M:%S')
         pos_side_str = str(pos_side).upper()
 
@@ -912,14 +954,16 @@ class BinanceOpeningCandleBot:
         pnl_total_str = f"+{pnl_total:.2f} USDT" if pnl_total >= 0 else f"{pnl_total:.2f} USDT"
 
         row = [
-            dia_str,
+            fecha_str,
             hora_str,
             pos_side_str,
             dur_str,
             gain_max_str,
             loss_max_str,
             roi_str,
+            roi_pct_str,
             comisiones_str,
+            comisiones_pct_str,
             color_str,
             cuerpo_str,
             mechasup_str,
@@ -928,8 +972,7 @@ class BinanceOpeningCandleBot:
             pnl_total_str
         ]
 
-        widths = [col[2] for col in self.DATA_COLUMNS]
-        line = " | ".join(val.ljust(w) for val, w in zip(row, widths)) + "\n"
+        line = "  ".join(val.ljust(col[1]) for val, col in zip(row, self.DATA_COLUMNS)).rstrip() + "\n"
 
         filename = "2datos.txt"
         try:
